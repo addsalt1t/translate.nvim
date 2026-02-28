@@ -1,0 +1,475 @@
+*translate.nvim.txt*    Minimal translation plugin for Neovim
+
+Author: translate.nvim contributors
+License: MIT
+
+==============================================================================
+CONTENTS                                         *translate.nvim-contents*
+
+1.  Introduction ................................ |translate-intro|
+2.  Requirements ................................ |translate-reqs|
+3.  Installation ................................ |translate-install|
+4.  Configuration ............................... |translate-config|
+    4.1 Default config .......................... |translate-defaults|
+    4.2 Option reference ........................ |translate-options|
+    4.3 Float options ........................... |translate-float|
+    4.4 Engine selection priority ............... |translate-engine-priority|
+5.  Translation Engines ......................... |translate-engines|
+    5.1 DeepL ................................... |translate-deepl|
+    5.2 Google Cloud Translation ................ |translate-google|
+6.  Keymaps ..................................... |translate-keymaps|
+7.  Commands .................................... |translate-commands|
+8.  Lua API ..................................... |translate-api|
+9.  Float Window ................................ |translate-float-window|
+10. Multi-line Translation ...................... |translate-multiline|
+11. State Persistence ........................... |translate-state|
+12. Health Check ................................ |translate-health|
+
+==============================================================================
+1. Introduction                                          *translate-intro*
+
+translate.nvim is a minimal Neovim plugin that translates visual selections
+using the DeepL API or Google Cloud Translation API v2. Translated text is
+displayed in a centered floating window with the engine name in the border
+title.
+
+Key capabilities:
+- Visual selection translation with a single keymap
+- Two translation engines: DeepL (35 targets) and Google (109 targets)
+- Engine and target language pickers via |vim.ui.select()|
+- State persistence across Neovim sessions
+- Indent and blank-line preservation in multi-line selections
+- Parallel chunking for large selections (50 lines per request)
+- Race guard to cancel stale in-flight requests
+
+==============================================================================
+2. Requirements                                           *translate-reqs*
+
+- Neovim 0.10+ (requires |vim.system()|)
+- `curl` in PATH
+- At least one API key:
+  - DeepL: `DEEPL_AUTH_KEY` env var or `setup({ api_key = "..." })`
+  - Google: `GOOGLE_TRANSLATE_API_KEY` or `GOOGLE_API_KEY` env var,
+    or `setup({ google_api_key = "..." })`
+
+Security: API keys are passed to curl via stdin (`--config -`), never as
+command-line arguments visible in process listings.
+
+==============================================================================
+3. Installation                                        *translate-install*
+
+lazy.nvim: >lua
+  {
+    "addsalt1t/translate.nvim",
+    opts = {
+      api_key = vim.env.DEEPL_AUTH_KEY,
+    },
+  }
+<
+
+packer.nvim: >lua
+  use({
+    "addsalt1t/translate.nvim",
+    config = function()
+      require("translate").setup({
+        api_key = vim.env.DEEPL_AUTH_KEY,
+      })
+    end,
+  })
+<
+
+Local development: >lua
+  {
+    dir = "/path/to/translate.nvim",
+    name = "translate.nvim",
+    config = function()
+      require("translate").setup()
+    end,
+  }
+<
+
+==============================================================================
+4. Configuration                                       *translate-config*
+
+The plugin auto-calls `setup()` on load with sensible defaults. Override
+any option as needed.
+
+------------------------------------------------------------------------------
+4.1 Default config                                   *translate-defaults*
+
+>lua
+  require("translate").setup({
+    api_key = vim.env.DEEPL_AUTH_KEY,
+    google_api_key = vim.env.GOOGLE_TRANSLATE_API_KEY
+                     or vim.env.GOOGLE_API_KEY,
+    engine = "deepl",
+    engine_labels = {
+      deepl = "DeepL",
+      google = "Google",
+    },
+    free_api = true,
+    default_target = "KO",
+    persist_target = true,
+    state_path = vim.fs.normalize(
+      vim.fn.stdpath("state") .. "/translate.nvim/state.json"
+    ),
+    keymaps = {
+      translate_visual = "<Space>tr",
+      select_target = "<Space>tl",
+      select_engine = "<Space>te",
+    },
+    float = {
+      border = "rounded",
+      winhighlight = "NormalFloat:Normal,FloatBorder:Normal",
+      size_base = "window",
+      width_ratio = 1.0,
+      height_ratio = 1.0,
+      width_offset = 0,
+      height_offset = 0,
+      min_width = 40,
+      min_height = 8,
+      inherit_view = true,
+      center_vertical = false,
+    },
+  })
+<
+
+------------------------------------------------------------------------------
+4.2 Option reference                                  *translate-options*
+
+*translate-opt-api_key*
+api_key ~
+  Type: `string?`  Default: `$DEEPL_AUTH_KEY`
+  DeepL API authentication key.
+
+*translate-opt-google_api_key*
+google_api_key ~
+  Type: `string?`  Default: `$GOOGLE_TRANSLATE_API_KEY`
+  Google Cloud Translation API key. Also reads `$GOOGLE_API_KEY` as
+  fallback.
+
+*translate-opt-engine*
+engine ~
+  Type: `string`  Default: `"deepl"`
+  Active translation engine. Valid values: `"deepl"`, `"google"`.
+
+*translate-opt-engine_labels*
+engine_labels ~
+  Type: `table`  Default: `{ deepl = "DeepL", google = "Google" }`
+  Display labels shown in the float window border title.
+
+*translate-opt-free_api*
+free_api ~
+  Type: `boolean`  Default: `true`
+  When true, uses the DeepL free endpoint (`api-free.deepl.com`).
+  Set to false for DeepL Pro (`api.deepl.com`).
+
+*translate-opt-default_target*
+default_target ~
+  Type: `string`  Default: `"KO"`
+  Fallback target language when the current target is unsupported
+  by the active engine.
+
+*translate-opt-persist_target*
+persist_target ~
+  Type: `boolean`  Default: `true`
+  Save engine and target language to `state_path` between sessions.
+
+*translate-opt-state_path*
+state_path ~
+  Type: `string`  Default: `stdpath("state").."/translate.nvim/state.json"`
+  Absolute path for the persisted state JSON file.
+
+*translate-opt-keymaps*
+keymaps ~
+  Type: `table`
+  Keymap bindings. Set any value to `""` to disable that keymap.
+  - `translate_visual`  (default `<Space>tr`) translate visual selection
+  - `select_target`     (default `<Space>tl`) open target language picker
+  - `select_engine`     (default `<Space>te`) open engine picker
+
+------------------------------------------------------------------------------
+4.3 Float options                                      *translate-float*
+
+*translate-opt-float.border*
+float.border ~
+  Type: `string`  Default: `"rounded"`
+  Border style for the floating window. See |nvim_open_win()|.
+
+*translate-opt-float.winhighlight*
+float.winhighlight ~
+  Type: `string`  Default: `"NormalFloat:Normal,FloatBorder:Normal"`
+  Highlight groups applied to the float window.
+
+*translate-opt-float.size_base*
+float.size_base ~
+  Type: `string`  Default: `"window"`
+  Base dimensions for ratio calculation: `"window"` (current source
+  window) or `"editor"` (full Neovim frame).
+
+*translate-opt-float.width_ratio*
+float.width_ratio ~
+  Type: `number`  Default: `1.0`  Range: 0.0–1.0
+  Width as a fraction of the base dimension.
+
+*translate-opt-float.height_ratio*
+float.height_ratio ~
+  Type: `number`  Default: `1.0`  Range: 0.0–1.0
+  Height as a fraction of the base dimension.
+
+*translate-opt-float.width_offset*
+float.width_offset ~
+  Type: `number`  Default: `0`
+  Additive column adjustment applied after ratio calculation.
+
+*translate-opt-float.height_offset*
+float.height_offset ~
+  Type: `number`  Default: `0`
+  Additive row adjustment applied after ratio calculation.
+
+*translate-opt-float.min_width*
+float.min_width ~
+  Type: `integer`  Default: `40`
+  Minimum window width in columns.
+
+*translate-opt-float.min_height*
+float.min_height ~
+  Type: `integer`  Default: `8`
+  Minimum window height in rows.
+
+*translate-opt-float.width*
+float.width ~
+  Type: `integer?`  Default: `nil`
+  Absolute width override. When set, skips ratio calculation.
+
+*translate-opt-float.height*
+float.height ~
+  Type: `integer?`  Default: `nil`
+  Absolute height override. When set, skips ratio calculation.
+
+*translate-opt-float.inherit_view*
+float.inherit_view ~
+  Type: `boolean`  Default: `true`
+  Copy formatting options (`tabstop`, `shiftwidth`, `expandtab`,
+  `showbreak`, `list`, etc.) from the source window/buffer.
+
+*translate-opt-float.center_vertical*
+float.center_vertical ~
+  Type: `boolean`  Default: `false`
+  Vertically center short translated text within the float window.
+
+Deprecated options: `max_width_ratio` and `max_height_ratio` are
+silently migrated to `width_ratio` / `height_ratio`.
+
+------------------------------------------------------------------------------
+4.4 Engine selection priority                  *translate-engine-priority*
+
+The active engine is resolved in this order:
+
+1. Explicit `engine` option passed to `setup()`
+2. Saved engine from state file (when `persist_target = true`)
+3. First-run auto-prefer: `"google"` when both API keys are present
+   and no saved state exists
+4. Base default: `"deepl"`
+
+==============================================================================
+5. Translation Engines                                 *translate-engines*
+
+Both engines share the same interface: asynchronous translation via
+|vim.system()| with curl, parallel chunking for batches over 50 lines,
+and indent-preserving line merging.
+
+------------------------------------------------------------------------------
+5.1 DeepL                                               *translate-deepl*
+
+API: DeepL API v2
+Endpoint: `https://api-free.deepl.com/v2` (free) or
+          `https://api.deepl.com/v2` (pro)
+Auth: `Authorization: DeepL-Auth-Key <key>` header via curl stdin
+
+Supported target languages (35):
+
+  AR    BG    CS    DA    DE    EL    EN-GB  EN-US
+  ES    ET    FI    FR    HE    HU    ID     IT
+  JA    KO    LT    LV    NB    NL    PL     PT-BR
+  PT-PT RO    RU    SK    SL    SV    TH     TR
+  UK    VI    ZH
+
+Aliases: `EN` → `EN-US`, `PT` → `PT-BR`,
+         `ZH-CN`/`ZH-TW`/`ZH-HANS`/`ZH-HANT` → `ZH`
+
+------------------------------------------------------------------------------
+5.2 Google Cloud Translation                            *translate-google*
+
+API: Cloud Translation API v2
+Endpoint: `https://translation.googleapis.com/language/translate/v2`
+Auth: `X-Goog-Api-Key: <key>` header via curl stdin
+
+Supported target languages (109): use `:TranslateSelectTarget` to
+browse the full list interactively, or see the source at
+`lua/translate/google.lua` for all language codes.
+
+Aliases: `EN-US`/`EN-GB` → `EN`, `PT-BR`/`PT-PT` → `PT`,
+         `ZH-HANS` → `ZH-CN`, `ZH-HANT` → `ZH-TW`
+
+==============================================================================
+6. Keymaps                                             *translate-keymaps*
+
+Default keymaps are set during |translate.setup()|:
+
+  Keymap       Mode   Action ~
+  `<Space>tr`    x      Translate visual selection
+  `<Space>tl`    n, x   Open target language picker
+  `<Space>te`    n, x   Open engine picker
+
+Set any keymap value to `""` (empty string) in `setup()` to disable it.
+
+==============================================================================
+7. Commands                                           *translate-commands*
+
+                                              *:TranslateSelectTarget*
+:TranslateSelectTarget
+  Open a |vim.ui.select()| picker showing all target languages
+  supported by the current engine. The selected language is saved
+  to the state file.
+
+                                              *:TranslateSelectEngine*
+:TranslateSelectEngine
+  Open a picker to switch between `deepl` and `google` engines.
+  The current target language is normalized for the new engine;
+  if unsupported, it falls back to |translate-opt-default_target|.
+
+==============================================================================
+8. Lua API                                                *translate-api*
+
+All functions are accessed via `require("translate")`.
+
+                                                    *translate.setup()*
+translate.setup({opts?})
+  Initialize the plugin with optional configuration. Called
+  automatically on plugin load. Safe to call multiple times;
+  each call resets keymaps and internal state.
+
+  Parameters: ~
+    {opts}  `table?`  Configuration options (see |translate-options|)
+
+  Returns: ~
+    The translate module table.
+
+                                           *translate.translate_visual()*
+translate.translate_visual()
+  Translate the current visual selection (charwise `v` or linewise `V`)
+  and display the result in a floating window. Blockwise visual mode
+  is not supported.
+
+  This function is asynchronous. A race guard ensures that only the
+  most recent translation request is displayed; earlier in-flight
+  requests are silently discarded.
+
+                                              *translate.select_target()*
+translate.select_target()
+  Open a |vim.ui.select()| picker with all target languages available
+  for the current engine. The selected language is set and persisted.
+
+  For DeepL, the language list is fetched from the API on first call
+  and cached for the session.
+
+                                              *translate.select_engine()*
+translate.select_engine()
+  Open a |vim.ui.select()| picker to switch translation engines.
+  Available engines: `deepl`, `google`.
+
+                                                *translate.set_target()*
+translate.set_target({code})
+  Set the target language programmatically.
+
+  Parameters: ~
+    {code}  `string`  Language code (e.g. `"EN"`, `"JA"`, `"KO"`)
+
+                                                *translate.set_engine()*
+translate.set_engine({engine})
+  Set the translation engine programmatically.
+
+  Parameters: ~
+    {engine}  `string`  Engine name (`"deepl"` or `"google"`)
+
+                                             *translate.current_target()*
+translate.current_target()
+  Return the current target language code.
+
+  Returns: ~
+    `string`  Current target language (e.g. `"KO"`)
+
+                                             *translate.current_engine()*
+translate.current_engine()
+  Return the current engine name.
+
+  Returns: ~
+    `string`  Current engine (e.g. `"deepl"`)
+
+==============================================================================
+9. Float Window                                   *translate-float-window*
+
+The result window is a scratch floating buffer opened with
+|nvim_open_win()|. It is centered within the source window (or the
+editor, depending on |translate-opt-float.size_base|).
+
+Sizing algorithm:
+1. Determine base dimensions from source window or editor
+2. Apply ratio: `floor(base * ratio) + offset`
+3. Clamp to minimum dimensions (`min_width`, `min_height`)
+4. Clamp to maximum (base size for window mode; editor minus 4 margin)
+5. Center within the base area
+
+The float always enables `wrap`, `linebreak`, and `breakindent` to
+prevent horizontal scrolling. Press `q` or `<Esc>` to close.
+
+==============================================================================
+10. Multi-line Translation                          *translate-multiline*
+
+When translating multi-line selections:
+
+- Blank lines are preserved in their original positions
+- Leading whitespace (indentation) is stripped before sending to the
+  API and restored after translation
+- Only non-empty lines are sent as translation requests
+- Lines are merged back in order, maintaining the original structure
+
+This means code comments and indented prose retain their formatting
+after translation.
+
+==============================================================================
+11. State Persistence                                  *translate-state*
+
+When `persist_target = true` (default), the plugin saves the current
+engine and target language to a JSON file at `state_path`.
+
+State file format: >json
+  {
+    "engine": "deepl",
+    "target_lang": "KO"
+  }
+<
+
+The state file is read during `setup()` and written whenever the
+engine or target language changes. The directory is created
+automatically if it does not exist.
+
+Use an absolute path for `state_path`. Relative paths are rejected
+with an error during setup.
+
+==============================================================================
+12. Health Check                                      *translate-health*
+
+Run: >vim
+  :checkhealth translate
+<
+
+Checks performed:
+- Neovim version >= 0.10
+- `curl` is available on PATH
+- `DEEPL_AUTH_KEY` environment variable
+- `GOOGLE_TRANSLATE_API_KEY` or `GOOGLE_API_KEY` environment variable
+
+==============================================================================
+vim:tw=78:ts=8:noet:ft=help:norl:
