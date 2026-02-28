@@ -59,13 +59,6 @@ local function normalize_engine_labels(labels)
   return normalized
 end
 
----Normalize a language code to upper-case trimmed form.
----@param lang any
----@return string|nil
-function M.normalize_lang(lang)
-  return normalize.upper_code(lang)
-end
-
 ---Build a fully normalized config from user options merged over defaults.
 ---@param user_opts table|nil
 ---@return table
@@ -89,19 +82,6 @@ function M.build(user_opts)
   end
   opts.float.inherit_view = normalize.boolean(opts.float.inherit_view, true)
   opts.float.center_vertical = normalize.boolean(opts.float.center_vertical, false)
-
-  -- Migrate deprecated float option aliases (max_width_ratio → width_ratio).
-  -- Check user_opts directly: defaults already provide width_ratio, so opts.float
-  -- always has it. Only migrate when the user omitted the modern name.
-  local user_float = type(user_opts) == "table" and user_opts.float or nil
-  if type(user_float) == "table" then
-    if user_float.width_ratio == nil and opts.float.max_width_ratio ~= nil then
-      opts.float.width_ratio = opts.float.max_width_ratio
-    end
-    if user_float.height_ratio == nil and opts.float.max_height_ratio ~= nil then
-      opts.float.height_ratio = opts.float.max_height_ratio
-    end
-  end
 
   -- Clamp ratio values to 0.0-1.0 range.
   opts.float.width_ratio = normalize.clamp_number(opts.float.width_ratio, 0, 1, defaults.float.width_ratio)

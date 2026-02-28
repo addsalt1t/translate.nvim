@@ -288,58 +288,6 @@ local function ensure_api_key(config, on_done)
   return api_key
 end
 
----@class GoogleTranslateContext
----@field target_lang string Normalized target language code
----@field api_key string Google API key
----@field curl_opts table Curl options for official API
----@field source_lines string[] Original source lines
----@field request_lines string[] Lines to translate
----@field index_map table Index mapping from request to source lines
----@field indent_map string[] Leading whitespace stripped from each request line
----@field on_done function Completion callback
-
----Run a single translate request for the given lines.
----@param ctx GoogleTranslateContext Translation context
----@param lines string[] Lines to translate in this request
----@param on_result fun(err: string|nil, texts: string[]|nil) Result callback
-local function run_translate_request(ctx, lines, on_result)
-  local args = build_official_translate_args(lines, ctx.target_lang)
-
-  provider_common.run_curl_json(args, ctx.curl_opts, function(err, decoded)
-    if err then
-      on_result(err)
-      return
-    end
-
-    local translated_texts, decode_err = decode_official_translated_texts(decoded, #lines)
-    if not translated_texts then
-      on_result(decode_err)
-      return
-    end
-
-    on_result(nil, translated_texts)
-  end)
-end
-
----Translate all request lines in parallel chunks.
----Dispatches all chunks simultaneously and assembles results in order.
----@param ctx GoogleTranslateContext Translation context
-local function translate_parallel(ctx)
-  provider_common.dispatch_parallel_chunks(ctx.request_lines, MAX_TEXTS_PER_REQUEST,
-    function(chunk, _start_idx, callback)
-      run_translate_request(ctx, chunk, callback)
-    end,
-    function(err, all_texts)
-      if err then ctx.on_done(err); return end
-      local translated, merge_err = provider_common.merge_translated_lines(
-        ctx.source_lines, all_texts, ctx.index_map, "Google", ctx.indent_map
-      )
-      if not translated then ctx.on_done(merge_err); return end
-      ctx.on_done(nil, translated)
-    end
-  )
-end
-
 ---Normalize a target language code (public wrapper).
 ---@param code string Raw language code
 ---@return string normalized Canonical uppercase language code
@@ -362,17 +310,11 @@ function M.translate(config, text, on_done)
   local api_key = ensure_api_key(config, on_done)
   if not api_key then return end
 
-  if type(text) ~= "string" or text == "" then
-    on_done("No text selected. Use visual mode to select text first.")
+  if not provider_common.validate_translate_text(text, on_done) then
     return
   end
 
   local source_lines, request_lines, index_map, indent_map = provider_common.build_request_lines(text)
-  if #request_lines == 0 then
-    on_done(nil, table.concat(source_lines, "\n"))
-    return
-  end
-
   local target_lang = normalize_target(config.target_lang)
 
   if not TARGET_LANGUAGE_SET[target_lang] then
@@ -380,21 +322,22 @@ function M.translate(config, text, on_done)
     return
   end
 
-  ---@type GoogleTranslateContext
-  local ctx = {
-    target_lang = target_lang,
-    api_key = api_key,
-    curl_opts = vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
-      stdin = build_api_key_header_stdin(api_key),
-    }),
-    source_lines = source_lines,
-    request_lines = request_lines,
-    index_map = index_map,
-    indent_map = indent_map,
-    on_done = on_done,
-  }
+  local curl_opts = vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
+    stdin = build_api_key_header_stdin(api_key),
+  })
 
-  translate_parallel(ctx)
+  provider_common.translate_lines(source_lines, request_lines, index_map, indent_map, MAX_TEXTS_PER_REQUEST, "Google",
+    function(chunk, _start_idx, callback)
+      local args = build_official_translate_args(chunk, target_lang)
+      provider_common.run_curl_json(args, curl_opts, function(err, decoded)
+        if err then callback(err); return end
+        local translated_texts, decode_err = decode_official_translated_texts(decoded, #chunk)
+        if not translated_texts then callback(decode_err); return end
+        callback(nil, translated_texts)
+      end)
+    end,
+    on_done
+  )
 end
 
 ---Fetch available target languages from Google Translate.

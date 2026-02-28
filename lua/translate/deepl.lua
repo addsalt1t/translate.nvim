@@ -168,8 +168,7 @@ function M.translate(config, text, on_done)
   if not ensure_api_key(config, on_done) then
     return
   end
-  if type(text) ~= "string" or text == "" then
-    on_done("No text selected. Use visual mode to select text first.")
+  if not provider_common.validate_translate_text(text, on_done) then
     return
   end
 
@@ -184,16 +183,11 @@ function M.translate(config, text, on_done)
   end
 
   local source_lines, request_lines, index_map, indent_map = provider_common.build_request_lines(text)
-  if #request_lines == 0 then
-    on_done(nil, table.concat(source_lines, "\n"))
-    return
-  end
-
   local curl_opts = vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
     stdin = build_auth_header_stdin(request_config.api_key),
   })
 
-  provider_common.dispatch_parallel_chunks(request_lines, MAX_TEXTS_PER_REQUEST,
+  provider_common.translate_lines(source_lines, request_lines, index_map, indent_map, MAX_TEXTS_PER_REQUEST, "DeepL",
     function(chunk, start_idx, callback)
       provider_common.run_curl_json(build_translate_args(request_config, chunk), curl_opts, function(err, decoded)
         if err then callback(err); return end
@@ -202,14 +196,7 @@ function M.translate(config, text, on_done)
         callback(nil, texts)
       end)
     end,
-    function(err, all_texts)
-      if err then on_done(err); return end
-      local translated, merge_err = provider_common.merge_translated_lines(
-        source_lines, all_texts, index_map, "DeepL", indent_map
-      )
-      if not translated then on_done(merge_err); return end
-      on_done(nil, translated)
-    end
+    on_done
   )
 end
 

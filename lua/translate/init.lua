@@ -12,8 +12,8 @@ local M = {
   _config = nil,
   _target_cache = {},
   _keymaps = {},
-  _translate_seq = 0,
-  _active_translate_seq = 0,
+  _next_request_id = 0,
+  _active_request_id = nil,
 }
 
 local function notify(message, level)
@@ -48,22 +48,22 @@ local function ensure_setup()
   return M._config
 end
 
+local function available_engines()
+  local engines = vim.tbl_keys(providers)
+  table.sort(engines)
+  return engines
+end
+
 local function resolve_provider_by_engine(engine)
   local provider = providers[engine]
   if provider then
     return provider
   end
-
-  local available = vim.tbl_keys(providers)
-  table.sort(available)
-  return nil, ("Unsupported engine '%s'. Available engines: %s"):format(engine, table.concat(available, ", "))
-end
-
-local function resolve_provider(cfg)
-  return resolve_provider_by_engine(cfg.engine)
+  return nil, ("Unsupported engine '%s'. Available engines: %s"):format(engine, table.concat(available_engines(), ", "))
 end
 
 local function resolve_provider_label(cfg, engine)
+  engine = engine or cfg.engine
   local label = cfg.engine_labels[engine]
   if type(label) == "string" and label ~= "" then
     return label
@@ -71,22 +71,12 @@ local function resolve_provider_label(cfg, engine)
   return engine:upper()
 end
 
-local function available_engines()
-  local engines = vim.tbl_keys(providers)
-  table.sort(engines)
-  return engines
-end
-
-local function normalize_engine_name(engine)
-  return normalize.lower_name(engine)
-end
-
 local function has_explicit_engine_option(opts)
   return type(opts) == "table" and opts.engine ~= nil
 end
 
 local function normalize_target_for_provider(provider, target)
-  local normalized = config_module.normalize_lang(target)
+  local normalized = normalize.upper_code(target)
   if not normalized then
     return nil
   end
@@ -125,17 +115,17 @@ local function normalize_with_fallback_target(cfg, provider, candidate)
 end
 
 local function invalidate_active_translation()
-  M._active_translate_seq = M._translate_seq + 1
+  M._active_request_id = nil
 end
 
 local function begin_translation_request()
-  M._translate_seq = M._translate_seq + 1
-  M._active_translate_seq = M._translate_seq
-  return M._translate_seq
+  M._next_request_id = M._next_request_id + 1
+  M._active_request_id = M._next_request_id
+  return M._next_request_id
 end
 
 local function is_active_translation_request(request_id)
-  return request_id == M._active_translate_seq
+  return request_id == M._active_request_id
 end
 
 local function build_translation_snapshot(cfg)
@@ -239,7 +229,7 @@ local function persist_state(cfg)
 end
 
 local function resolve_current_provider_or_notify(cfg)
-  local provider, provider_err = resolve_provider(cfg)
+  local provider, provider_err = resolve_provider_by_engine(cfg.engine)
   if not provider then
     notify(provider_err, vim.log.levels.ERROR)
     return nil
@@ -261,7 +251,7 @@ local function set_target_language(code)
   end
   if not is_target_supported_for_provider(provider, normalized) then
     notify(
-      ("Unsupported target language '%s' for %s."):format(normalized, resolve_provider_label(cfg, cfg.engine)),
+      ("Unsupported target language '%s' for %s."):format(normalized, resolve_provider_label(cfg)),
       vim.log.levels.ERROR
     )
     return
@@ -275,7 +265,7 @@ end
 
 local function set_translation_engine(engine)
   local cfg = ensure_setup()
-  local normalized = normalize_engine_name(engine)
+  local normalized = normalize.lower_name(engine)
   if not normalized then
     notify("Invalid engine name.", vim.log.levels.ERROR)
     return
@@ -303,7 +293,7 @@ local function set_translation_engine(engine)
   invalidate_active_translation()
   persist_state(cfg)
 
-  notify(("Translation engine: %s"):format(resolve_provider_label(cfg, cfg.engine)))
+  notify(("Translation engine: %s"):format(resolve_provider_label(cfg)))
 end
 
 local function select_target_from(items, prompt)
@@ -361,7 +351,7 @@ function M.setup(opts)
   local restored_engine = nil
   if type(saved) == "table" then
     if not explicit_engine then
-      local saved_engine = normalize_engine_name(saved.engine)
+      local saved_engine = normalize.lower_name(saved.engine)
       if saved_engine and providers[saved_engine] then
         cfg.engine = saved_engine
         restored_engine = saved_engine
@@ -376,7 +366,7 @@ function M.setup(opts)
     cfg.engine = "google"
   end
 
-  local provider, provider_err = resolve_provider(cfg)
+  local provider, provider_err = resolve_provider_by_engine(cfg.engine)
   if not provider then
     error(("translate.nvim setup error: %s"):format(provider_err))
   end
@@ -389,8 +379,8 @@ function M.setup(opts)
 
   M._config = cfg
   M._target_cache = {}
-  M._translate_seq = 0
-  M._active_translate_seq = 0
+  M._next_request_id = 0
+  M._active_request_id = nil
 
   clear_keymaps()
   set_keymap("x", cfg.keymaps.translate_visual, function()
@@ -409,28 +399,20 @@ function M.setup(opts)
   return M
 end
 
-function M.translate_visual()
-  local cfg = ensure_setup()
+local function do_translate(cfg, text)
   local provider = resolve_current_provider_or_notify(cfg)
   if not provider then
     return
   end
 
-  local text, err = get_visual_text()
-  if not text then
-    notify(err, vim.log.levels.ERROR)
-    return
-  end
-
   local request_id = begin_translation_request()
   local request_snapshot = build_translation_snapshot(cfg)
-  local model_label = resolve_provider_label(cfg, cfg.engine)
+  local model_label = resolve_provider_label(cfg)
 
   provider.translate(request_snapshot, text, function(api_err, translated)
     if not is_active_translation_request(request_id) then
       return
     end
-
     if api_err then
       notify(api_err, vim.log.levels.ERROR)
       return
@@ -439,49 +421,30 @@ function M.translate_visual()
       if not is_active_translation_request(request_id) then
         return
       end
-      ui.show_result(translated, cfg, {
-        model = model_label,
-      })
+      ui.show_result(translated, cfg, { model = model_label })
     end)
   end)
 end
 
-function M.translate_file()
+function M.translate_visual()
   local cfg = ensure_setup()
-  local provider = resolve_current_provider_or_notify(cfg)
-  if not provider then
+  local text, err = get_visual_text()
+  if not text then
+    notify(err, vim.log.levels.ERROR)
     return
   end
+  do_translate(cfg, text)
+end
 
+function M.translate_file()
+  local cfg = ensure_setup()
   local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
   local text = table.concat(lines, "\n")
   if text == "" then
     notify("Buffer is empty. Nothing to translate.", vim.log.levels.WARN)
     return
   end
-
-  local request_id = begin_translation_request()
-  local request_snapshot = build_translation_snapshot(cfg)
-  local model_label = resolve_provider_label(cfg, cfg.engine)
-
-  provider.translate(request_snapshot, text, function(api_err, translated)
-    if not is_active_translation_request(request_id) then
-      return
-    end
-
-    if api_err then
-      notify(api_err, vim.log.levels.ERROR)
-      return
-    end
-    vim.schedule(function()
-      if not is_active_translation_request(request_id) then
-        return
-      end
-      ui.show_result(translated, cfg, {
-        model = model_label,
-      })
-    end)
-  end)
+  do_translate(cfg, text)
 end
 
 function M.select_target()
@@ -493,7 +456,7 @@ function M.select_target()
 
   local cache_key = cfg.engine
   if M._target_cache[cache_key] then
-    select_target_from(M._target_cache[cache_key], ("Select %s target language"):format(resolve_provider_label(cfg, cfg.engine)))
+    select_target_from(M._target_cache[cache_key], ("Select %s target language"):format(resolve_provider_label(cfg)))
     return
   end
 
@@ -504,7 +467,7 @@ function M.select_target()
     end
 
     M._target_cache[cache_key] = languages
-    select_target_from(languages, ("Select %s target language"):format(resolve_provider_label(cfg, cfg.engine)))
+    select_target_from(languages, ("Select %s target language"):format(resolve_provider_label(cfg)))
   end)
 end
 

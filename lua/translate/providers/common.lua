@@ -110,14 +110,6 @@ function M.build_request_lines(text)
   return source_lines, request_lines, index_map, indent_map
 end
 
-function M.slice(values, start_index, stop_index)
-  local chunk = {}
-  for i = start_index, stop_index do
-    table.insert(chunk, values[i])
-  end
-  return chunk
-end
-
 ---Dispatch items in parallel chunks, collect results in order, and invoke on_done.
 ---@param items any[] Items to process (e.g. request_lines)
 ---@param max_per_chunk integer Maximum items per chunk
@@ -132,7 +124,7 @@ function M.dispatch_parallel_chunks(items, max_per_chunk, run_chunk, on_done)
   for chunk_id = 1, num_chunks do
     local start_idx = (chunk_id - 1) * max_per_chunk + 1
     local stop_idx = math.min(chunk_id * max_per_chunk, #items)
-    local chunk = M.slice(items, start_idx, stop_idx)
+    local chunk = vim.list_slice(items, start_idx, stop_idx)
 
     run_chunk(chunk, start_idx, function(err, texts)
       if failed then return end
@@ -163,9 +155,6 @@ local function translated_text(item)
   if type(item) == "string" then
     return item
   end
-  if type(item) == "table" and type(item.text) == "string" then
-    return item.text
-  end
   return nil
 end
 
@@ -183,6 +172,47 @@ function M.merge_translated_lines(source_lines, translations, index_map, provide
   end
 
   return table.concat(merged, "\n")
+end
+
+---Validate that text is a non-empty string, calling on_done with an error if not.
+---@param text any Value to validate
+---@param on_done fun(err: string) Error callback
+---@return boolean valid True if text is valid for translation
+function M.validate_translate_text(text, on_done)
+  if type(text) ~= "string" or text == "" then
+    on_done("No text provided for translation.")
+    return false
+  end
+  return true
+end
+
+---Translate lines via parallel chunked dispatch and merge results.
+---Handles the empty-request-lines shortcut and the final merge step.
+---@param source_lines string[] Original lines (including blanks)
+---@param request_lines string[] Non-blank lines to translate
+---@param index_map integer[] Mapping from request index to source index
+---@param indent_map string[] Leading whitespace stripped from each request line
+---@param max_per_chunk integer Maximum lines per parallel request
+---@param provider_name string Provider name for error messages
+---@param run_chunk fun(chunk: string[], start_idx: integer, callback: fun(err: string?, texts: string[]?)) Per-chunk handler
+---@param on_done fun(err: string?, translated: string?) Final callback
+function M.translate_lines(source_lines, request_lines, index_map, indent_map, max_per_chunk, provider_name, run_chunk, on_done)
+  if #request_lines == 0 then
+    on_done(nil, table.concat(source_lines, "\n"))
+    return
+  end
+
+  M.dispatch_parallel_chunks(request_lines, max_per_chunk,
+    run_chunk,
+    function(err, all_texts)
+      if err then on_done(err); return end
+      local translated, merge_err = M.merge_translated_lines(
+        source_lines, all_texts, index_map, provider_name, indent_map
+      )
+      if not translated then on_done(merge_err); return end
+      on_done(nil, translated)
+    end
+  )
 end
 
 return M

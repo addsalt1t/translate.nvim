@@ -112,18 +112,8 @@ function M.run()
   assert(min_valid_cfg.float.min_width == 60, "valid min_width must be preserved")
   assert(min_valid_cfg.float.min_height == 10, "valid min_height must be preserved")
 
-  -- Deprecated max_width_ratio / max_height_ratio migration tests
-  local deprecated_ratio_cfg = config.build({
-    float = { max_width_ratio = 0.8, max_height_ratio = 0.6 },
-  })
-  assert(deprecated_ratio_cfg.float.width_ratio == 0.8, "max_width_ratio must migrate to width_ratio")
-  assert(deprecated_ratio_cfg.float.height_ratio == 0.6, "max_height_ratio must migrate to height_ratio")
-
-  local modern_takes_precedence_cfg = config.build({
-    float = { width_ratio = 0.5, max_width_ratio = 0.8, height_ratio = 0.4, max_height_ratio = 0.9 },
-  })
-  assert(modern_takes_precedence_cfg.float.width_ratio == 0.5, "modern width_ratio must take precedence over deprecated")
-  assert(modern_takes_precedence_cfg.float.height_ratio == 0.4, "modern height_ratio must take precedence over deprecated")
+  -- Deprecated max_width_ratio / max_height_ratio are no longer migrated;
+  -- only the modern width_ratio / height_ratio names are recognized.
 end
 
 return M
