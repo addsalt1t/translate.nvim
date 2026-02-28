@@ -396,6 +396,9 @@ function M.setup(opts)
   set_keymap("x", cfg.keymaps.translate_visual, function()
     require("translate").translate_visual()
   end, "Translate visual selection")
+  set_keymap("n", cfg.keymaps.translate_file, function()
+    require("translate").translate_file()
+  end, "Translate entire file")
   set_keymap({ "n", "x" }, cfg.keymaps.select_target, function()
     require("translate").select_target()
   end, "Select target language")
@@ -416,6 +419,44 @@ function M.translate_visual()
   local text, err = get_visual_text()
   if not text then
     notify(err, vim.log.levels.ERROR)
+    return
+  end
+
+  local request_id = begin_translation_request()
+  local request_snapshot = build_translation_snapshot(cfg)
+  local model_label = resolve_provider_label(cfg, cfg.engine)
+
+  provider.translate(request_snapshot, text, function(api_err, translated)
+    if not is_active_translation_request(request_id) then
+      return
+    end
+
+    if api_err then
+      notify(api_err, vim.log.levels.ERROR)
+      return
+    end
+    vim.schedule(function()
+      if not is_active_translation_request(request_id) then
+        return
+      end
+      ui.show_result(translated, cfg, {
+        model = model_label,
+      })
+    end)
+  end)
+end
+
+function M.translate_file()
+  local cfg = ensure_setup()
+  local provider = resolve_current_provider_or_notify(cfg)
+  if not provider then
+    return
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  local text = table.concat(lines, "\n")
+  if text == "" then
+    notify("Buffer is empty. Nothing to translate.", vim.log.levels.WARN)
     return
   end
 

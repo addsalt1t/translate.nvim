@@ -11,6 +11,12 @@ end, {
   desc = "Select target language for current translate.nvim engine",
 })
 
+vim.api.nvim_create_user_command("TranslateFile", function()
+  require("translate").translate_file()
+end, {
+  desc = "Translate entire file with translate.nvim",
+})
+
 vim.api.nvim_create_user_command("TranslateSelectEngine", function()
   require("translate").select_engine()
 end, {
