@@ -1,5 +1,6 @@
 local M = {}
 local normalize = require("translate.normalize")
+local uv = vim.uv
 
 ---Normalize a target language code using provider-specific data.
 ---@param code any Raw language code (e.g. "en", "zh-cn", "pt_BR")
@@ -150,11 +151,28 @@ end
 
 function M.write_temp_file(prefix, content)
   local suffix = type(prefix) == "string" and prefix ~= "" and ("-" .. prefix) or ""
-  local path = vim.fn.tempname() .. suffix
-  local ok, err = pcall(vim.fn.writefile, { content or "" }, path, "b")
-  if not ok then
-    return nil, ("Failed to write temporary request file: %s"):format(err)
+  local body = content or ""
+  local path = nil
+  local fd = nil
+
+  if uv and type(uv.fs_mkstemp) == "function" then
+    fd, path = uv.fs_mkstemp(vim.fn.tempname() .. suffix .. "-XXXXXX")
+  elseif uv and type(uv.fs_open) == "function" then
+    path = vim.fn.tempname() .. suffix
+    fd = uv.fs_open(path, "w", 384)
   end
+
+  if not fd or type(path) ~= "string" or path == "" then
+    return nil, "Failed to write temporary request file: unable to create secure tempfile"
+  end
+
+  local written, write_err = uv.fs_write(fd, body, -1)
+  local _, close_err = uv.fs_close(fd)
+  if not written or close_err then
+    pcall(vim.fn.delete, path)
+    return nil, ("Failed to write temporary request file: %s"):format(write_err or close_err)
+  end
+
   return path
 end
 
@@ -199,7 +217,8 @@ function M.dispatch_parallel_chunks(items, max_per_chunk, run_chunk, on_done)
       return
     end
     cancelled = true
-    for _, child in ipairs(controllers) do
+    for chunk_id = 1, num_chunks do
+      local child = controllers[chunk_id]
       if child and type(child.kill) == "function" then
         pcall(child.kill, child, signal or 15)
       end
@@ -207,11 +226,15 @@ function M.dispatch_parallel_chunks(items, max_per_chunk, run_chunk, on_done)
   end
 
   for chunk_id = 1, num_chunks do
+    if failed or cancelled then
+      break
+    end
+
     local start_idx = (chunk_id - 1) * max_per_chunk + 1
     local stop_idx = math.min(chunk_id * max_per_chunk, #items)
     local chunk = vim.list_slice(items, start_idx, stop_idx)
 
-    controllers[chunk_id] = run_chunk(chunk, start_idx, function(err, texts)
+    local child = run_chunk(chunk, start_idx, function(err, texts)
       if failed or cancelled then return end
       if err then
         failed = true
@@ -235,6 +258,11 @@ function M.dispatch_parallel_chunks(items, max_per_chunk, run_chunk, on_done)
         on_done(nil, all_texts)
       end
     end)
+    controllers[chunk_id] = child
+
+    if (failed or cancelled) and child and type(child.kill) == "function" then
+      pcall(child.kill, child, 15)
+    end
   end
 
   return controller

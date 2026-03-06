@@ -5,6 +5,24 @@ local mock = require("tests.headless.helpers.mock_system")
 local provider_common = require("translate.providers.common")
 
 function M.run()
+  do
+    local path, err = provider_common.write_temp_file("provider-common-http", "secret=1")
+    assert(err == nil, ("write_temp_file should succeed: %s"):format(tostring(err)))
+    assert(type(path) == "string" and path ~= "", "write_temp_file should return a path")
+
+    local ok, result = pcall(function()
+      assert(vim.fn.getfperm(path) == "rw-------", "write_temp_file should create owner-only temp files")
+      local lines = vim.fn.readfile(path, "b")
+      assert(#lines == 1 and lines[1] == "secret=1", "write_temp_file should preserve request body content")
+    end)
+
+    vim.fn.delete(path)
+
+    if not ok then
+      error(result)
+    end
+  end
+
   mock.with_mock_system({
     { code = 0, stdout = '{"ok":true}', stderr = "" },
   }, function()
@@ -83,6 +101,33 @@ function M.run()
     assert(records[1].killed, "run_curl_json controller should kill the underlying vim.system handle")
     assert(callback_count == 0, "run_curl_json should suppress callbacks after cancellation")
   end)
+
+  do
+    local launches = 0
+    local killed = 0
+    local errors = {}
+
+    provider_common.dispatch_parallel_chunks({ "one", "two", "three" }, 1, function(chunk, start_idx, callback)
+      launches = launches + 1
+      local child = {
+        kill = function()
+          killed = killed + 1
+        end,
+      }
+
+      if start_idx == 1 then
+        callback("boom")
+      end
+
+      return child
+    end, function(err)
+      table.insert(errors, err)
+    end)
+
+    assert(#errors == 1 and errors[1] == "boom", "dispatch_parallel_chunks should report synchronous chunk failure once")
+    assert(launches == 1, ("dispatch_parallel_chunks should stop after first synchronous failure, got %d launches"):format(launches))
+    assert(killed == 1, ("dispatch_parallel_chunks should kill the synchronously failed controller, got %d kills"):format(killed))
+  end
 end
 
 return M
