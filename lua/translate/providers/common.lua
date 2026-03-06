@@ -149,6 +149,16 @@ function M.build_form_body(fields)
   return table.concat(parts, "&")
 end
 
+function M.require_config_text(config, field, error_message, on_done)
+  local value = type(config) == "table" and normalize.trim_to_nil(config[field]) or nil
+  if value then
+    return value
+  end
+
+  on_done(error_message)
+  return nil
+end
+
 function M.write_temp_file(prefix, content)
   local suffix = type(prefix) == "string" and prefix ~= "" and ("-" .. prefix) or ""
   local body = content or ""
@@ -176,12 +186,12 @@ function M.write_temp_file(prefix, content)
   return path
 end
 
-function M.split_lines(text)
+local function split_lines(text)
   return vim.split(text, "\n", { plain = true, trimempty = false })
 end
 
 function M.build_request_lines(text)
-  local source_lines = M.split_lines(text)
+  local source_lines = split_lines(text)
   local request_lines = {}
   local index_map = {}
   local indent_map = {}
@@ -268,24 +278,16 @@ function M.dispatch_parallel_chunks(items, max_per_chunk, run_chunk, on_done)
   return controller
 end
 
-local function translated_text(item)
-  if type(item) == "string" then
-    return item
-  end
-  return nil
-end
-
 function M.merge_translated_lines(source_lines, translations, index_map, provider_name, indent_map)
   local merged = vim.list_extend({}, source_lines)
   local name = type(provider_name) == "string" and provider_name ~= "" and provider_name or "Provider"
 
   for i, source_index in ipairs(index_map) do
-    local text = translated_text(translations[i])
-    if not text then
+    if type(translations[i]) ~= "string" then
       return nil, ("%s response is missing translation for line %d."):format(name, source_index)
     end
     local prefix = indent_map and indent_map[i] or ""
-    merged[source_index] = prefix .. text
+    merged[source_index] = prefix .. translations[i]
   end
 
   return table.concat(merged, "\n")
@@ -332,6 +334,76 @@ function M.translate_lines(source_lines, request_lines, index_map, indent_map, m
       on_done(nil, translated)
     end
   )
+end
+
+function M.translate_chunked_json(opts)
+  if not M.validate_translate_text(opts.text, opts.on_done) then
+    return
+  end
+
+  local source_lines, request_lines, index_map, indent_map = M.build_request_lines(opts.text)
+  return M.translate_lines(
+    source_lines,
+    request_lines,
+    index_map,
+    indent_map,
+    opts.max_per_chunk,
+    opts.provider_name,
+    function(chunk, start_idx, callback)
+      local body_path, write_err = M.write_temp_file(opts.body_prefix, opts.build_body(chunk, start_idx))
+      if not body_path then
+        callback(write_err)
+        return nil
+      end
+
+      return M.run_curl_json(
+        opts.build_args(body_path, start_idx),
+        vim.tbl_extend("force", {}, opts.curl_opts or {}, {
+          cleanup_paths = { body_path },
+        }),
+        function(err, decoded)
+          if err then
+            callback(err)
+            return
+          end
+
+          local texts, decode_err = opts.decode_response(decoded, #chunk, start_idx)
+          if not texts then
+            callback(decode_err)
+            return
+          end
+
+          callback(nil, texts)
+        end
+      )
+    end,
+    opts.on_done
+  )
+end
+
+function M.sort_languages_by_name(languages)
+  table.sort(languages, function(a, b)
+    return a.name < b.name
+  end)
+
+  return languages
+end
+
+function M.fetch_languages(args, opts, decode_languages, on_done)
+  return M.run_curl_json(args, opts, function(err, decoded)
+    if err then
+      on_done(err)
+      return
+    end
+
+    local languages, decode_err = decode_languages(decoded)
+    if not languages then
+      on_done(decode_err)
+      return
+    end
+
+    on_done(nil, languages)
+  end)
 end
 
 return M

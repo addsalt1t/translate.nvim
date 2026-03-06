@@ -1,5 +1,4 @@
 local M = {}
-local normalize = require("translate.normalize")
 local provider_common = require("translate.providers.common")
 local MAX_TEXTS_PER_REQUEST = 50
 local CURL_JSON_OPTIONS = {
@@ -98,13 +97,14 @@ end
 ---Validate the API key and invoke on_done with an error if missing.
 ---@param config table provider config with `api_key`
 ---@param on_done fun(err: string?) callback
----@return boolean true if key is present
+---@return string|nil api_key The trimmed API key, or nil if missing
 local function ensure_api_key(config, on_done)
-  if not normalize.has_text(config.api_key) then
-    on_done("DEEPL_AUTH_KEY is missing. Set it in env or call setup({ api_key = '...' }).")
-    return false
-  end
-  return true
+  return provider_common.require_config_text(
+    config,
+    "api_key",
+    "DEEPL_AUTH_KEY is missing. Set it in env or call setup({ api_key = '...' }).",
+    on_done
+  )
 end
 
 ---Build curl arguments for a /translate request.
@@ -174,15 +174,13 @@ end
 ---@param text string text to translate (newline-separated lines)
 ---@param on_done fun(err: string?, result: string?) callback with error or translated text
 function M.translate(config, text, on_done)
-  if not ensure_api_key(config, on_done) then
-    return
-  end
-  if not provider_common.validate_translate_text(text, on_done) then
+  local api_key = ensure_api_key(config, on_done)
+  if not api_key then
     return
   end
 
   local request_config = {
-    api_key = config.api_key,
+    api_key = api_key,
     free_api = config.free_api,
     target_lang = normalize_target(config.target_lang),
   }
@@ -191,51 +189,42 @@ function M.translate(config, text, on_done)
     return
   end
 
-  local source_lines, request_lines, index_map, indent_map = provider_common.build_request_lines(text)
   local curl_opts = vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
     stdin = build_auth_header_stdin(request_config.api_key),
   })
 
-  return provider_common.translate_lines(source_lines, request_lines, index_map, indent_map, MAX_TEXTS_PER_REQUEST, "DeepL",
-    function(chunk, start_idx, callback)
-      local body_path, write_err = provider_common.write_temp_file("deepl-request", build_translate_body(request_config, chunk))
-      if not body_path then
-        callback(write_err)
-        return nil
-      end
-
-      return provider_common.run_curl_json(build_translate_args(request_config, body_path), vim.tbl_extend("force", {}, curl_opts, {
-        cleanup_paths = { body_path },
-      }), function(err, decoded)
-        if err then callback(err); return end
-        local texts, decode_err = decode_translate_response(decoded, #chunk, start_idx)
-        if not texts then callback(decode_err); return end
-        callback(nil, texts)
-      end)
+  return provider_common.translate_chunked_json({
+    text = text,
+    max_per_chunk = MAX_TEXTS_PER_REQUEST,
+    provider_name = "DeepL",
+    body_prefix = "deepl-request",
+    curl_opts = curl_opts,
+    build_body = function(chunk)
+      return build_translate_body(request_config, chunk)
     end,
-    on_done
-  )
+    build_args = function(body_path)
+      return build_translate_args(request_config, body_path)
+    end,
+    decode_response = decode_translate_response,
+    on_done = on_done,
+  })
 end
 
 ---Fetch available DeepL target languages.
 ---@param config table provider config with `api_key` and `free_api`
 ---@param on_done fun(err: string?, languages: table[]?) callback with error or sorted language list
 function M.target_languages(config, on_done)
-  if not ensure_api_key(config, on_done) then
+  local api_key = ensure_api_key(config, on_done)
+  if not api_key then
     return
   end
 
   local endpoint = base_url(config) .. "/languages?type=target"
   local args = build_base_curl_args("GET", endpoint)
 
-  return provider_common.run_curl_json(args, vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
-    stdin = build_auth_header_stdin(config.api_key),
-  }), function(err, decoded)
-    if err then
-      on_done(err)
-      return
-    end
-
+  return provider_common.fetch_languages(args, vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
+    stdin = build_auth_header_stdin(api_key),
+  }), function(decoded)
     local languages = {}
     for _, item in ipairs(decoded) do
       if type(item) == "table" and type(item.language) == "string" then
@@ -246,17 +235,12 @@ function M.target_languages(config, on_done)
       end
     end
 
-    table.sort(languages, function(a, b)
-      return a.name < b.name
-    end)
-
     if #languages == 0 then
-      on_done("DeepL returned no target languages.")
-      return
+      return nil, "DeepL returned no target languages."
     end
 
-    on_done(nil, languages)
-  end)
+    return provider_common.sort_languages_by_name(languages)
+  end, on_done)
 end
 
 ---Normalize a target language code (public wrapper).

@@ -1,5 +1,4 @@
 local M = {}
-local normalize = require("translate.normalize")
 local provider_common = require("translate.providers.common")
 local MAX_TEXTS_PER_REQUEST = 50
 local CURL_JSON_OPTIONS = {
@@ -195,9 +194,8 @@ end
 
 ---Build curl arguments for the official Cloud Translation API translate endpoint.
 ---@param body_path string path to URL-encoded POST body
----@param target_lang string Normalized target language code
 ---@return string[] args Curl command arguments
-local function build_official_translate_args(body_path, target_lang)
+local function build_official_translate_args(body_path)
   local args = build_base_curl_args("POST", "https://translation.googleapis.com/language/translate/v2")
   vim.list_extend(args, {
     "--config",
@@ -273,15 +271,11 @@ local function decode_official_target_languages(decoded)
     end
   end
 
-  table.sort(languages, function(a, b)
-    return a.name < b.name
-  end)
-
   if #languages == 0 then
     return nil, "Google Cloud returned no target languages."
   end
 
-  return languages
+  return provider_common.sort_languages_by_name(languages)
 end
 
 ---Validate the API key and invoke on_done with an error if missing.
@@ -289,12 +283,12 @@ end
 ---@param on_done fun(err: string?) Callback
 ---@return string|nil api_key The trimmed API key, or nil if missing
 local function ensure_api_key(config, on_done)
-  local api_key = normalize.trim_to_nil(config.google_api_key)
-  if not api_key then
-    on_done("Google API key is missing. Set GOOGLE_TRANSLATE_API_KEY or GOOGLE_API_KEY in env, or call setup({ google_api_key = '...' }).")
-    return nil
-  end
-  return api_key
+  return provider_common.require_config_text(
+    config,
+    "google_api_key",
+    "Google API key is missing. Set GOOGLE_TRANSLATE_API_KEY or GOOGLE_API_KEY in env, or call setup({ google_api_key = '...' }).",
+    on_done
+  )
 end
 
 ---Normalize a target language code (public wrapper).
@@ -317,13 +311,10 @@ end
 ---@param on_done fun(err: string|nil, translated: string|nil) Completion callback
 function M.translate(config, text, on_done)
   local api_key = ensure_api_key(config, on_done)
-  if not api_key then return end
-
-  if not provider_common.validate_translate_text(text, on_done) then
+  if not api_key then
     return
   end
 
-  local source_lines, request_lines, index_map, indent_map = provider_common.build_request_lines(text)
   local target_lang = normalize_target(config.target_lang)
 
   if not TARGET_LANGUAGE_SET[target_lang] then
@@ -335,26 +326,23 @@ function M.translate(config, text, on_done)
     stdin = build_api_key_header_stdin(api_key),
   })
 
-  return provider_common.translate_lines(source_lines, request_lines, index_map, indent_map, MAX_TEXTS_PER_REQUEST, "Google",
-    function(chunk, _start_idx, callback)
-      local body_path, write_err = provider_common.write_temp_file("google-request", build_official_translate_body(chunk, target_lang))
-      if not body_path then
-        callback(write_err)
-        return nil
-      end
-
-      local args = build_official_translate_args(body_path, target_lang)
-      return provider_common.run_curl_json(args, vim.tbl_extend("force", {}, curl_opts, {
-        cleanup_paths = { body_path },
-      }), function(err, decoded)
-        if err then callback(err); return end
-        local translated_texts, decode_err = decode_official_translated_texts(decoded, #chunk)
-        if not translated_texts then callback(decode_err); return end
-        callback(nil, translated_texts)
-      end)
+  return provider_common.translate_chunked_json({
+    text = text,
+    max_per_chunk = MAX_TEXTS_PER_REQUEST,
+    provider_name = "Google",
+    body_prefix = "google-request",
+    curl_opts = curl_opts,
+    build_body = function(chunk)
+      return build_official_translate_body(chunk, target_lang)
     end,
-    on_done
-  )
+    build_args = function(body_path)
+      return build_official_translate_args(body_path)
+    end,
+    decode_response = function(decoded, expected_count)
+      return decode_official_translated_texts(decoded, expected_count)
+    end,
+    on_done = on_done,
+  })
 end
 
 ---Fetch available target languages from Google Translate.
@@ -362,24 +350,18 @@ end
 ---@param on_done fun(err: string|nil, languages: table[]|nil) Completion callback
 function M.target_languages(config, on_done)
   local api_key = ensure_api_key(config or {}, on_done)
-  if not api_key then return end
+  if not api_key then
+    return
+  end
 
-  return provider_common.run_curl_json(build_official_languages_args(), vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
-    stdin = build_api_key_header_stdin(api_key),
-  }), function(err, decoded)
-    if err then
-      on_done(err)
-      return
-    end
-
-    local languages, parse_err = decode_official_target_languages(decoded)
-    if not languages then
-      on_done(parse_err)
-      return
-    end
-
-    on_done(nil, languages)
-  end)
+  return provider_common.fetch_languages(
+    build_official_languages_args(),
+    vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
+      stdin = build_api_key_header_stdin(api_key),
+    }),
+    decode_official_target_languages,
+    on_done
+  )
 end
 
 return M

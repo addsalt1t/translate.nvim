@@ -103,6 +103,139 @@ function M.run()
   end)
 
   do
+    local body_path = nil
+    local body_snapshot = nil
+
+    mock.with_mock_system({
+      {
+        code = 0,
+        stdout = '{"items":["FIRST","SECOND"]}',
+        stderr = "",
+        on_call = function(record)
+          for _, value in ipairs(record.args) do
+            if type(value) == "string" and string.sub(value, 1, 1) == "@" then
+              body_path = string.sub(value, 2)
+              body_snapshot = table.concat(vim.fn.readfile(body_path), "\n")
+            end
+          end
+        end,
+      },
+    }, function()
+      local err_msg, translated = async_case.await_callback("provider_common translate_chunked_json success", 1000, function(done)
+        provider_common.translate_chunked_json({
+          text = "alpha\n\nbeta",
+          max_per_chunk = 50,
+          provider_name = "Example",
+          body_prefix = "provider-common-translate",
+          build_body = function(chunk)
+            return table.concat(chunk, "|")
+          end,
+          build_args = function(path)
+            return { "curl", "https://example.test", "@" .. path }
+          end,
+          decode_response = function(decoded, expected_count)
+            if type(decoded.items) ~= "table" then
+              return nil, "missing items"
+            end
+
+            local items = {}
+            for i = 1, expected_count do
+              items[i] = decoded.items[i]
+            end
+            return items
+          end,
+          on_done = function(err, value)
+            done(err, value)
+          end,
+        })
+      end)
+
+      assert(err_msg == nil, ("translate_chunked_json should succeed: %s"):format(tostring(err_msg)))
+      assert(translated == "FIRST\n\nSECOND", ("translate_chunked_json merge mismatch: %s"):format(tostring(translated)))
+      assert(type(body_snapshot) == "string" and body_snapshot == "alpha|beta", "translate_chunked_json body builder mismatch")
+      assert(type(body_path) == "string" and body_path ~= "", "translate_chunked_json should write a tempfile body")
+      assert(vim.fn.filereadable(body_path) == 0, "translate_chunked_json should clean up body tempfiles")
+    end)
+  end
+
+  mock.with_mock_system({
+    {
+      code = 0,
+      stdout = '{"items":["ONLY-ONE"]}',
+      stderr = "",
+    },
+  }, function()
+    local err_msg = async_case.await_callback("provider_common translate_chunked_json count mismatch", 1000, function(done)
+      provider_common.translate_chunked_json({
+        text = "alpha\nbeta",
+        max_per_chunk = 50,
+        provider_name = "Example",
+        body_prefix = "provider-common-mismatch",
+        build_body = function(chunk)
+          return table.concat(chunk, "|")
+        end,
+        build_args = function(path)
+          return { "curl", "https://example.test", "@" .. path }
+        end,
+        decode_response = function(decoded)
+          return decoded.items
+        end,
+        on_done = function(err)
+          done(err)
+        end,
+      })
+    end)
+
+    assert(err_msg == "Response returned 1 translations for 2 lines.", "translate_chunked_json should validate response counts")
+  end)
+
+  mock.with_mock_system({
+    {
+      code = 0,
+      stdout = '{"languages":[{"code":"KO","name":"Korean"}]}',
+      stderr = "",
+    },
+  }, function()
+    local err_msg, languages = async_case.await_callback("provider_common fetch_languages success", 1000, function(done)
+      provider_common.fetch_languages({ "curl", "https://example.test" }, {
+        empty_stdout_message = "empty",
+        decode_error_message = "decode failed",
+      }, function(decoded)
+        if type(decoded.languages) ~= "table" then
+          return nil, "missing languages"
+        end
+        return decoded.languages
+      end, function(err, value)
+        done(err, value)
+      end)
+    end)
+
+    assert(err_msg == nil, ("fetch_languages should succeed: %s"):format(tostring(err_msg)))
+    assert(type(languages) == "table" and languages[1].code == "KO", "fetch_languages should pass decoded language lists through")
+  end)
+
+  mock.with_mock_system({
+    {
+      code = 0,
+      stdout = '{"ok":true}',
+      stderr = "",
+    },
+  }, function()
+    local err_msg = async_case.await_callback("provider_common fetch_languages decode error", 1000, function(done)
+      provider_common.fetch_languages({ "curl", "https://example.test" }, {
+        empty_stdout_message = "empty",
+        decode_error_message = "decode failed",
+      }, function()
+        return nil, "missing languages"
+      end, function(err)
+        done(err)
+      end)
+    end)
+
+    assert(err_msg == "missing languages", "fetch_languages should surface decoder errors")
+  end)
+
+  do
     local launches = 0
     local killed = 0
     local errors = {}

@@ -16,8 +16,12 @@ local SPECS = {
   "tests.headless.spec.state_path_validation",
   "tests.headless.spec.provider_line_structure",
   "tests.headless.spec.provider_common_http",
+  "tests.headless.spec.provider_target_languages",
+  "tests.headless.spec.picker_flows",
   "tests.headless.spec.visual_selection_bounds",
+  "tests.headless.spec.visual_selection_errors",
   "tests.headless.spec.health_check",
+  "tests.headless.spec.ui_lifecycle_geometry",
 }
 
 local function ensure_package_path()

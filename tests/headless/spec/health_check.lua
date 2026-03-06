@@ -128,6 +128,44 @@ function M.run()
   assert(has_event(events, "ok", "runtime config"), "health report should acknowledge runtime-configured API keys")
   assert(not has_event(events, "warn", "DEEPL_AUTH_KEY"), "runtime-configured DeepL key should suppress env-only warning")
   assert(not has_event(events, "warn", "GOOGLE_TRANSLATE_API_KEY"), "runtime-configured Google key should suppress env-only warning")
+
+  events = {}
+  vim.health = {
+    start = function(message)
+      table.insert(events, { level = "start", message = message })
+    end,
+    ok = function(message)
+      table.insert(events, { level = "ok", message = message })
+    end,
+    warn = function(message)
+      table.insert(events, { level = "warn", message = message })
+    end,
+    error = function(message)
+      table.insert(events, { level = "error", message = message })
+    end,
+  }
+  vim.fn.executable = function(binary)
+    if binary == "curl" then
+      return 0
+    end
+    return original_executable(binary)
+  end
+  vim.fn.has = function(feature)
+    if feature == "nvim-0.10" then
+      return 0
+    end
+    return original_has(feature)
+  end
+
+  ok, run_err = pcall(health.check)
+
+  vim.fn.has = original_has
+  vim.fn.executable = original_executable
+  vim.health = original_health
+
+  assert(ok, ("translate.health.check negative branch should not throw: %s"):format(tostring(run_err)))
+  assert(has_event(events, "error", "Neovim 0.10+"), "health report should error when Neovim is too old")
+  assert(has_event(events, "error", "curl is required"), "health report should error when curl is missing")
 end
 
 return M

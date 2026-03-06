@@ -1,5 +1,7 @@
 local config_module = require("translate.config")
 local normalize = require("translate.normalize")
+local picker = require("translate.picker")
+local selection = require("translate.selection")
 local state = require("translate.state")
 local ui = require("translate.ui")
 
@@ -157,82 +159,13 @@ local function build_translation_snapshot(cfg)
   }
 end
 
-local function normalize_selection(srow, scol, erow, ecol)
-  if srow > erow or (srow == erow and scol > ecol) then
-    return erow, ecol, srow, scol
+local function update_runtime_state(cfg, changes)
+  if changes.engine then
+    cfg.engine = changes.engine
   end
-  return srow, scol, erow, ecol
-end
-
-local function is_visual_mode(mode)
-  return mode == "v" or mode == "V" or mode == "\22"
-end
-
-local function line_end_col(row)
-  local line = vim.api.nvim_buf_get_lines(0, row, row + 1, true)[1] or ""
-  return #line
-end
-
-local function build_visual_bounds(mode, srow, scol, erow, ecol)
-  srow, scol, erow, ecol = normalize_selection(srow, scol, erow, ecol)
-
-  local end_col = ecol + 1
-  if mode == "V" then
-    scol = 0
-    end_col = line_end_col(erow)
+  if changes.target_lang then
+    cfg.target_lang = changes.target_lang
   end
-
-  return {
-    mode = mode,
-    srow = srow,
-    scol = scol,
-    erow = erow,
-    end_col = end_col,
-  }
-end
-
-local function get_visual_bounds_from_mode(mode)
-  local visual_start = vim.fn.getpos("v")
-  local cursor = vim.fn.getpos(".")
-  if type(visual_start) ~= "table" or type(cursor) ~= "table" then
-    return nil
-  end
-
-  local srow, scol = visual_start[2] - 1, visual_start[3] - 1
-  local erow, ecol = cursor[2] - 1, cursor[3] - 1
-  return build_visual_bounds(mode, srow, scol, erow, ecol)
-end
-
-local function get_visual_bounds_from_marks()
-  local visual_mode = vim.fn.visualmode()
-  local start_mark = vim.api.nvim_buf_get_mark(0, "<")
-  local end_mark = vim.api.nvim_buf_get_mark(0, ">")
-  if vim.tbl_isempty(start_mark) or vim.tbl_isempty(end_mark) then
-    return nil
-  end
-
-  local srow, scol = start_mark[1] - 1, start_mark[2]
-  local erow, ecol = end_mark[1] - 1, end_mark[2]
-  return build_visual_bounds(visual_mode, srow, scol, erow, ecol)
-end
-
-local function get_visual_text()
-  local mode = vim.fn.mode()
-  local bounds = is_visual_mode(mode) and get_visual_bounds_from_mode(mode) or get_visual_bounds_from_marks()
-  if not bounds then
-    return nil, "No visual selection found. Please select text in visual mode and try again."
-  end
-  if bounds.mode == "\22" then
-    return nil, "Blockwise visual mode is not supported. Use charwise (v) or linewise (V)."
-  end
-
-  local lines = vim.api.nvim_buf_get_text(0, bounds.srow, bounds.scol, bounds.erow, bounds.end_col, {})
-  local text = table.concat(lines, "\n")
-  if text == "" then
-    return nil, "No text selected. Select text in visual mode and try again."
-  end
-
-  return text
 end
 
 local function persist_state(cfg)
@@ -248,6 +181,12 @@ local function persist_state(cfg)
   end
 end
 
+local function apply_runtime_state(cfg, changes)
+  update_runtime_state(cfg, changes)
+  invalidate_active_translation()
+  persist_state(cfg)
+end
+
 local function resolve_current_provider_or_notify(cfg)
   local provider, provider_err = resolve_provider_by_engine(cfg.engine)
   if not provider then
@@ -257,6 +196,40 @@ local function resolve_current_provider_or_notify(cfg)
   return provider
 end
 
+local function resolve_target_change(cfg, provider, code)
+  local normalized = normalize_target_for_provider(provider, code)
+  if not normalized then
+    return nil, "Invalid target language code."
+  end
+  if not is_target_supported_for_provider(provider, normalized) then
+    return nil, ("Unsupported target language '%s' for %s."):format(normalized, resolve_provider_label(cfg))
+  end
+
+  return normalized
+end
+
+local function resolve_engine_change(cfg, engine)
+  local normalized = normalize.lower_name(engine)
+  if not normalized then
+    return nil, "Invalid engine name."
+  end
+
+  local provider, provider_err = resolve_provider_by_engine(normalized)
+  if not provider then
+    return nil, provider_err
+  end
+
+  local next_target = normalize_with_fallback_target(cfg, provider, cfg.target_lang)
+  if not next_target then
+    return nil, "Failed to normalize target language for selected engine."
+  end
+
+  return {
+    engine = normalized,
+    target_lang = next_target,
+  }
+end
+
 local function set_target_language(code)
   local cfg = ensure_setup()
   local provider = resolve_current_provider_or_notify(cfg)
@@ -264,147 +237,57 @@ local function set_target_language(code)
     return
   end
 
-  local normalized = normalize_target_for_provider(provider, code)
+  local normalized, err = resolve_target_change(cfg, provider, code)
   if not normalized then
-    notify("Invalid target language code.", vim.log.levels.ERROR)
-    return
-  end
-  if not is_target_supported_for_provider(provider, normalized) then
-    notify(
-      ("Unsupported target language '%s' for %s."):format(normalized, resolve_provider_label(cfg)),
-      vim.log.levels.ERROR
-    )
+    notify(err, vim.log.levels.ERROR)
     return
   end
 
-  cfg.target_lang = normalized
-  invalidate_active_translation()
-  persist_state(cfg)
+  apply_runtime_state(cfg, { target_lang = normalized })
   notify(("Target language: %s"):format(cfg.target_lang))
 end
 
 local function set_translation_engine(engine)
   local cfg = ensure_setup()
-  local normalized = normalize.lower_name(engine)
-  if not normalized then
-    notify("Invalid engine name.", vim.log.levels.ERROR)
+  local next_state, err = resolve_engine_change(cfg, engine)
+  if not next_state then
+    notify(err, vim.log.levels.ERROR)
     return
   end
 
-  local provider, provider_err = resolve_provider_by_engine(normalized)
-  if not provider then
-    notify(provider_err, vim.log.levels.ERROR)
-    return
-  end
-
-  local previous_engine = cfg.engine
-  local previous_target = cfg.target_lang
-  cfg.engine = normalized
-
-  local next_target = normalize_with_fallback_target(cfg, provider, previous_target)
-  if not next_target then
-    cfg.engine = previous_engine
-    cfg.target_lang = previous_target
-    notify("Failed to normalize target language for selected engine.", vim.log.levels.ERROR)
-    return
-  end
-
-  cfg.target_lang = next_target
-  invalidate_active_translation()
-  persist_state(cfg)
-
+  apply_runtime_state(cfg, next_state)
   notify(("Translation engine: %s"):format(resolve_provider_label(cfg)))
 end
 
-local function select_target_from(items, prompt)
-  local cfg = ensure_setup()
-
-  vim.schedule(function()
-    vim.ui.select(items, {
-      prompt = prompt or "Select target language",
-      format_item = function(item)
-        if item.code == cfg.target_lang then
-          return ("%s (%s) [current]"):format(item.name, item.code)
-        end
-        return ("%s (%s)"):format(item.name, item.code)
-      end,
-    }, function(choice)
-      if choice then
-        set_target_language(choice.code)
-      end
-    end)
-  end)
+local function target_picker_prompt(cfg)
+  return ("Select %s target language"):format(resolve_provider_label(cfg))
 end
 
-local function select_engine_from(items)
+local function show_target_picker(items)
   local cfg = ensure_setup()
 
-  vim.schedule(function()
-    vim.ui.select(items, {
-      prompt = "Select translation engine",
-      format_item = function(item)
-        local label = resolve_provider_label(cfg, item)
-        if item == cfg.engine then
-          return ("%s (%s) [current]"):format(label, item)
-        end
-        return ("%s (%s)"):format(label, item)
-      end,
-    }, function(choice)
-      if choice then
-        set_translation_engine(choice)
-      end
-    end)
-  end)
+  picker.open(items, {
+    prompt = target_picker_prompt(cfg),
+    format_item = picker.target_formatter(cfg.target_lang),
+    on_choice = function(choice)
+      set_target_language(choice.code)
+    end,
+  })
 end
 
-function M.setup(opts)
-  notify_deprecated_float_options(opts)
-  local cfg = config_module.build(opts)
-  local explicit_engine = has_explicit_engine_option(opts)
-  if cfg.persist_target then
-    local valid_state_path, state_path_err = state.validate_path(cfg.state_path)
-    if not valid_state_path then
-      error(("translate.nvim setup error: %s"):format(state_path_err))
-    end
-  end
+local function show_engine_picker(items)
+  local cfg = ensure_setup()
 
-  local saved = cfg.persist_target and state.load(cfg.state_path) or nil
-  local restored_engine = nil
-  if type(saved) == "table" then
-    if not explicit_engine then
-      local saved_engine = normalize.lower_name(saved.engine)
-      if saved_engine and providers[saved_engine] then
-        cfg.engine = saved_engine
-        restored_engine = saved_engine
-      end
-    end
-    if type(saved.target_lang) == "string" and saved.target_lang ~= "" then
-      cfg.target_lang = saved.target_lang
-    end
-  end
+  picker.open(items, {
+    prompt = "Select translation engine",
+    format_item = picker.engine_formatter(cfg.engine, function(engine)
+      return resolve_provider_label(cfg, engine)
+    end),
+    on_choice = set_translation_engine,
+  })
+end
 
-  if not explicit_engine and not restored_engine and normalize.has_text(cfg.api_key) and normalize.has_text(cfg.google_api_key) then
-    cfg.engine = "google"
-  end
-
-  local provider, provider_err = resolve_provider_by_engine(cfg.engine)
-  if not provider then
-    error(("translate.nvim setup error: %s"):format(provider_err))
-  end
-
-  local normalized_target = normalize_with_fallback_target(cfg, provider, cfg.target_lang)
-  if not normalized_target then
-    error(("translate.nvim setup error: failed to normalize target language for engine '%s'."):format(cfg.engine))
-  end
-  cfg.target_lang = normalized_target
-
-  invalidate_active_translation()
-  M._config = cfg
-  M._target_cache = {}
-  M._next_request_id = 0
-  M._active_request_id = nil
-  M._active_request_controller = nil
-
+local function register_keymaps(cfg)
   clear_keymaps()
   set_keymap("x", cfg.keymaps.translate_visual, function()
     require("translate").translate_visual()
@@ -418,6 +301,76 @@ function M.setup(opts)
   set_keymap({ "n", "x" }, cfg.keymaps.select_engine, function()
     require("translate").select_engine()
   end, "Select translation engine")
+end
+
+local function restore_saved_state(cfg, explicit_engine)
+  local saved = cfg.persist_target and state.load(cfg.state_path) or nil
+  local restored_engine = false
+
+  if type(saved) == "table" then
+    if not explicit_engine then
+      local saved_engine = normalize.lower_name(saved.engine)
+      if saved_engine and providers[saved_engine] then
+        cfg.engine = saved_engine
+        restored_engine = true
+      end
+    end
+    if type(saved.target_lang) == "string" and saved.target_lang ~= "" then
+      cfg.target_lang = saved.target_lang
+    end
+  end
+
+  return restored_engine
+end
+
+local function choose_default_engine(cfg, explicit_engine, restored_engine)
+  if explicit_engine or restored_engine then
+    return
+  end
+  if normalize.has_text(cfg.api_key) and normalize.has_text(cfg.google_api_key) then
+    cfg.engine = "google"
+  end
+end
+
+local function normalize_setup_state(cfg)
+  local provider, provider_err = resolve_provider_by_engine(cfg.engine)
+  if not provider then
+    error(("translate.nvim setup error: %s"):format(provider_err))
+  end
+
+  local normalized_target = normalize_with_fallback_target(cfg, provider, cfg.target_lang)
+  if not normalized_target then
+    error(("translate.nvim setup error: failed to normalize target language for engine '%s'."):format(cfg.engine))
+  end
+
+  cfg.target_lang = normalized_target
+end
+
+local function activate_config(cfg)
+  invalidate_active_translation()
+  M._config = cfg
+  M._target_cache = {}
+  M._next_request_id = 0
+  M._active_request_id = nil
+  M._active_request_controller = nil
+  register_keymaps(cfg)
+end
+
+function M.setup(opts)
+  notify_deprecated_float_options(opts)
+  local cfg = config_module.build(opts)
+  local explicit_engine = has_explicit_engine_option(opts)
+  if cfg.persist_target then
+    local valid_state_path, state_path_err = state.validate_path(cfg.state_path)
+    if not valid_state_path then
+      error(("translate.nvim setup error: %s"):format(state_path_err))
+    end
+  end
+
+  local restored_engine = restore_saved_state(cfg, explicit_engine)
+  choose_default_engine(cfg, explicit_engine, restored_engine)
+  normalize_setup_state(cfg)
+  activate_config(cfg)
 
   return M
 end
@@ -463,7 +416,7 @@ end
 
 function M.translate_visual()
   local cfg = ensure_setup()
-  local text, err = get_visual_text()
+  local text, err = selection.get_visual_text()
   if not text then
     notify(err, vim.log.levels.ERROR)
     return
@@ -491,7 +444,7 @@ function M.select_target()
 
   local cache_key = cfg.engine
   if M._target_cache[cache_key] then
-    select_target_from(M._target_cache[cache_key], ("Select %s target language"):format(resolve_provider_label(cfg)))
+    show_target_picker(M._target_cache[cache_key])
     return
   end
 
@@ -502,7 +455,7 @@ function M.select_target()
     end
 
     M._target_cache[cache_key] = languages
-    select_target_from(languages, ("Select %s target language"):format(resolve_provider_label(cfg)))
+    show_target_picker(languages)
   end)
 end
 
@@ -512,7 +465,7 @@ function M.select_engine()
     notify("No translation engines are registered.", vim.log.levels.ERROR)
     return
   end
-  select_engine_from(engines)
+  show_engine_picker(engines)
 end
 
 function M.set_target(code)
