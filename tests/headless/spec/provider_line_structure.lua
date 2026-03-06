@@ -11,6 +11,14 @@ function M.run()
       code = 0,
       stdout = '{"translations":[{"text":"DEEPL-1"},{"text":"DEEPL-2"}]}',
       stderr = "",
+      on_call = function(record)
+        for _, value in ipairs(record.args) do
+          if type(value) == "string" and string.sub(value, 1, 1) == "@" then
+            M._deepl_body_path = string.sub(value, 2)
+            M._deepl_body = table.concat(vim.fn.readfile(M._deepl_body_path), "\n")
+          end
+        end
+      end,
     },
   }, function(calls, records)
     local err_msg, output = async_case.await_callback("deepl line structure translate", 1000, function(done)
@@ -28,15 +36,29 @@ function M.run()
     assert(mock.has_arg(calls[1], "--config"), "deepl should pass auth header through curl config stdin")
     assert(not mock.has_arg(calls[1], "DeepL-Auth-Key"), "deepl auth header must not be exposed in argv")
     assert(not mock.has_arg(calls[1], "dummy"), "deepl api key must not be exposed in argv")
+    assert(not mock.has_arg(calls[1], "line-1"), "deepl request text must not be exposed in argv")
+    assert(type(M._deepl_body_path) == "string" and M._deepl_body_path ~= "", "deepl should write request body to a tempfile")
+    assert(type(M._deepl_body) == "string" and string.find(M._deepl_body, "text=line-1", 1, true), "deepl body tempfile should contain encoded text payload")
+    assert(vim.fn.filereadable(M._deepl_body_path) == 0, "deepl request body tempfile should be cleaned up")
     assert(type(records[1].opts) == "table" and type(records[1].opts.stdin) == "string", "deepl stdin config missing")
     assert(string.find(records[1].opts.stdin, "DeepL-Auth-Key dummy", 1, true), "deepl stdin key config missing")
   end)
+  M._deepl_body_path = nil
+  M._deepl_body = nil
 
   mock.with_mock_system({
     {
       code = 0,
       stdout = '{"data":{"translations":[{"translatedText":"GOOGLE-1"},{"translatedText":"GOOGLE-2"}]}}',
       stderr = "",
+      on_call = function(record)
+        for _, value in ipairs(record.args) do
+          if type(value) == "string" and string.sub(value, 1, 1) == "@" then
+            M._google_body_path = string.sub(value, 2)
+            M._google_body = table.concat(vim.fn.readfile(M._google_body_path), "\n")
+          end
+        end
+      end,
     },
   }, function(calls, records)
     local err_msg, output = async_case.await_callback("google line structure translate", 1000, function(done)
@@ -53,9 +75,15 @@ function M.run()
     assert(mock.has_arg(calls[1], "--config"), "google cloud should pass api key header through curl config stdin")
     assert(not mock.has_arg(calls[1], "X-Goog-Api-Key"), "google cloud key header must not be exposed in argv")
     assert(not mock.has_arg(calls[1], "dummy"), "google api key must not be exposed in argv")
+    assert(not mock.has_arg(calls[1], "line-1"), "google request text must not be exposed in argv")
+    assert(type(M._google_body_path) == "string" and M._google_body_path ~= "", "google should write request body to a tempfile")
+    assert(type(M._google_body) == "string" and string.find(M._google_body, "q=line-1", 1, true), "google body tempfile should contain encoded text payload")
+    assert(vim.fn.filereadable(M._google_body_path) == 0, "google request body tempfile should be cleaned up")
     assert(type(records[1].opts) == "table" and type(records[1].opts.stdin) == "string", "google cloud stdin config missing")
     assert(string.find(records[1].opts.stdin, "X-Goog-Api-Key: dummy", 1, true), "google cloud stdin key config missing")
   end)
+  M._google_body_path = nil
+  M._google_body = nil
 
   -- DeepL: indented lines must keep their leading whitespace after translation
   mock.with_mock_system({

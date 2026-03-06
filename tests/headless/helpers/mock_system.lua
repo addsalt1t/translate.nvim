@@ -15,10 +15,14 @@ function M.with_mock_system(queue, fn)
 
   vim.system = function(args, opts, on_done)
     table.insert(calls, clone_table(args))
-    table.insert(call_records, {
+    local record = {
       args = clone_table(args),
       opts = clone_table(opts),
-    })
+      killed = false,
+      kill_count = 0,
+      kill_signal = nil,
+    }
+    table.insert(call_records, record)
 
     local response = queue[index]
     index = index + 1
@@ -32,6 +36,10 @@ function M.with_mock_system(queue, fn)
       stderr = response.stderr or "",
     }
 
+    if type(response.on_call) == "function" then
+      response.on_call(record)
+    end
+
     local delay = tonumber(response.delay_ms) or 0
     if delay > 0 then
       vim.defer_fn(function()
@@ -44,6 +52,11 @@ function M.with_mock_system(queue, fn)
     end
 
     return {
+      kill = function(_, signal)
+        record.killed = true
+        record.kill_count = record.kill_count + 1
+        record.kill_signal = signal
+      end,
       wait = function()
         return payload
       end,

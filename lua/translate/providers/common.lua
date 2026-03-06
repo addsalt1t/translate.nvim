@@ -36,10 +36,49 @@ function M.run_curl_json(args, opts, on_done)
   local empty_stdout_message = opts.empty_stdout_message or "Response is empty."
   local decode_error_message = opts.decode_error_message or "Failed to parse response JSON."
   local stdin = type(opts.stdin) == "string" and opts.stdin ~= "" and opts.stdin or nil
+  local cleanup_paths = type(opts.cleanup_paths) == "table" and opts.cleanup_paths or {}
+  local handle = nil
+  local cancelled = false
+  local cleaned = false
 
-  vim.system(args, { text = true, stdin = stdin }, function(result)
+  local function cleanup()
+    if cleaned then
+      return
+    end
+    cleaned = true
+
+    for _, path in ipairs(cleanup_paths) do
+      if type(path) == "string" and path ~= "" and vim.fn.filereadable(path) == 1 then
+        pcall(vim.fn.delete, path)
+      end
+    end
+
+    if type(opts.cleanup) == "function" then
+      pcall(opts.cleanup)
+    end
+  end
+
+  local controller = {}
+  function controller.kill(_, signal)
+    if cancelled then
+      return
+    end
+    cancelled = true
+    if handle and type(handle.kill) == "function" then
+      pcall(handle.kill, handle, signal or 15)
+    end
+    cleanup()
+  end
+
+  handle = vim.system(args, { text = true, stdin = stdin }, function(result)
+    if cancelled then
+      cleanup()
+      return
+    end
+
     local stderr = vim.trim(result.stderr or "")
     local stdout = vim.trim(result.stdout or "")
+    cleanup()
 
     if result.code ~= 0 then
       local message = stderr ~= "" and stderr or stdout
@@ -63,6 +102,8 @@ function M.run_curl_json(args, opts, on_done)
 
     on_done(nil, decoded)
   end)
+
+  return controller
 end
 
 local function escape_curl_config_value(value)
@@ -86,6 +127,35 @@ function M.build_header_config_stdin(headers)
   end
 
   return table.concat(lines, "\n") .. "\n"
+end
+
+local function encode_form_component(value)
+  return (tostring(value):gsub("([^%w%-_%.~])", function(char)
+    return string.format("%%%02X", string.byte(char))
+  end))
+end
+
+function M.build_form_body(fields)
+  local parts = {}
+
+  for _, field in ipairs(fields or {}) do
+    if type(field) == "table" and type(field.name) == "string" and field.name ~= "" then
+      local value = field.value == nil and "" or field.value
+      table.insert(parts, encode_form_component(field.name) .. "=" .. encode_form_component(value))
+    end
+  end
+
+  return table.concat(parts, "&")
+end
+
+function M.write_temp_file(prefix, content)
+  local suffix = type(prefix) == "string" and prefix ~= "" and ("-" .. prefix) or ""
+  local path = vim.fn.tempname() .. suffix
+  local ok, err = pcall(vim.fn.writefile, { content or "" }, path, "b")
+  if not ok then
+    return nil, ("Failed to write temporary request file: %s"):format(err)
+  end
+  return path
 end
 
 function M.split_lines(text)
@@ -120,21 +190,38 @@ function M.dispatch_parallel_chunks(items, max_per_chunk, run_chunk, on_done)
   local results = {}
   local pending = num_chunks
   local failed = false
+  local cancelled = false
+  local controllers = {}
+  local controller = {}
+
+  function controller.kill(_, signal)
+    if cancelled then
+      return
+    end
+    cancelled = true
+    for _, child in ipairs(controllers) do
+      if child and type(child.kill) == "function" then
+        pcall(child.kill, child, signal or 15)
+      end
+    end
+  end
 
   for chunk_id = 1, num_chunks do
     local start_idx = (chunk_id - 1) * max_per_chunk + 1
     local stop_idx = math.min(chunk_id * max_per_chunk, #items)
     local chunk = vim.list_slice(items, start_idx, stop_idx)
 
-    run_chunk(chunk, start_idx, function(err, texts)
-      if failed then return end
+    controllers[chunk_id] = run_chunk(chunk, start_idx, function(err, texts)
+      if failed or cancelled then return end
       if err then
         failed = true
+        controller:kill()
         on_done(err)
         return
       end
       if #texts ~= #chunk then
         failed = true
+        controller:kill()
         on_done(("Response returned %d translations for %d lines."):format(#texts, #chunk))
         return
       end
@@ -149,6 +236,8 @@ function M.dispatch_parallel_chunks(items, max_per_chunk, run_chunk, on_done)
       end
     end)
   end
+
+  return controller
 end
 
 local function translated_text(item)
@@ -199,10 +288,12 @@ end
 function M.translate_lines(source_lines, request_lines, index_map, indent_map, max_per_chunk, provider_name, run_chunk, on_done)
   if #request_lines == 0 then
     on_done(nil, table.concat(source_lines, "\n"))
-    return
+    return {
+      kill = function() end,
+    }
   end
 
-  M.dispatch_parallel_chunks(request_lines, max_per_chunk,
+  return M.dispatch_parallel_chunks(request_lines, max_per_chunk,
     run_chunk,
     function(err, all_texts)
       if err then on_done(err); return end

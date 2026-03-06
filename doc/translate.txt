@@ -35,6 +35,7 @@ title.
 
 Key capabilities:
 - Visual selection translation with a single keymap
+- Whole-buffer translation via |:TranslateFile| or an opt-in keymap
 - Two translation engines: DeepL (35 targets) and Google (109 targets)
 - Engine and target language pickers via |vim.ui.select()|
 - State persistence across Neovim sessions
@@ -53,7 +54,8 @@ Key capabilities:
     or `setup({ google_api_key = "..." })`
 
 Security: API keys are passed to curl via stdin (`--config -`), never as
-command-line arguments visible in process listings.
+command-line arguments visible in process listings. Translation request
+bodies are written to temporary files instead of CLI arguments.
 
 ==============================================================================
 3. Installation                                        *translate-install*
@@ -115,6 +117,7 @@ any option as needed.
     ),
     keymaps = {
       translate_visual = "<Space>tr",
+      translate_file = "",  -- opt-in; e.g. "<Space>tf"
       select_target = "<Space>tl",
       select_engine = "<Space>te",
     },
@@ -185,6 +188,7 @@ keymaps ~
   Type: `table`
   Keymap bindings. Set any value to `""` to disable that keymap.
   - `translate_visual`  (default `<Space>tr`) translate visual selection
+  - `translate_file`    (default disabled) translate current buffer
   - `select_target`     (default `<Space>tl`) open target language picker
   - `select_engine`     (default `<Space>te`) open engine picker
 
@@ -258,8 +262,9 @@ float.center_vertical ~
   Type: `boolean`  Default: `false`
   Vertically center short translated text within the float window.
 
-Deprecated options: `max_width_ratio` and `max_height_ratio` are
-silently migrated to `width_ratio` / `height_ratio`.
+Deprecated options: `max_width_ratio` and `max_height_ratio` are no
+longer supported. Use `width_ratio` / `height_ratio` instead; `setup()`
+warns when legacy keys are detected.
 
 ------------------------------------------------------------------------------
 4.4 Engine selection priority                  *translate-engine-priority*
@@ -319,13 +324,22 @@ Default keymaps are set during |translate.setup()|:
 
   Keymap       Mode   Action ~
   `<Space>tr`    x      Translate visual selection
+  disabled       n      Translate current buffer
   `<Space>tl`    n, x   Open target language picker
   `<Space>te`    n, x   Open engine picker
 
 Set any keymap value to `""` (empty string) in `setup()` to disable it.
+Set `keymaps.translate_file` explicitly (for example `<Space>tf`) to
+opt in to whole-buffer translation.
 
 ==============================================================================
 7. Commands                                           *translate-commands*
+
+                                                      *:TranslateFile*
+:TranslateFile
+  Translate the entire current buffer and display the result in the
+  floating window. This sends the whole buffer to the configured
+  translation provider.
 
                                               *:TranslateSelectTarget*
 :TranslateSelectTarget
@@ -364,7 +378,15 @@ translate.translate_visual()
 
   This function is asynchronous. A race guard ensures that only the
   most recent translation request is displayed; earlier in-flight
-  requests are silently discarded.
+  requests are cancelled before their results can surface.
+
+                                             *translate.translate_file()*
+translate.translate_file()
+  Translate the entire current buffer and display the result in a
+  floating window.
+
+  Warning: this sends the whole current buffer to the configured
+  translation provider.
 
                                               *translate.select_target()*
 translate.select_target()
@@ -468,8 +490,8 @@ Run: >vim
 Checks performed:
 - Neovim version >= 0.10
 - `curl` is available on PATH
-- `DEEPL_AUTH_KEY` environment variable
-- `GOOGLE_TRANSLATE_API_KEY` or `GOOGLE_API_KEY` environment variable
+- DeepL API key from env or active `setup()` runtime config
+- Google API key from env or active `setup()` runtime config
 
 ==============================================================================
 vim:tw=78:ts=8:noet:ft=help:norl:

@@ -11,7 +11,9 @@ end
 
 function M.run()
   local health = require("translate.health")
+  local translate = require("translate")
   assert(type(health.check) == "function", "translate.health.check must be a function")
+  translate._config = nil
 
   local events = {}
   local original_health = vim.health
@@ -75,6 +77,57 @@ function M.run()
     has_event(events, "warn", "GOOGLE_TRANSLATE_API_KEY"),
     "health report should mention Google API key env when key is not set"
   )
+
+  events = {}
+  vim.health = {
+    start = function(message)
+      table.insert(events, { level = "start", message = message })
+    end,
+    ok = function(message)
+      table.insert(events, { level = "ok", message = message })
+    end,
+    warn = function(message)
+      table.insert(events, { level = "warn", message = message })
+    end,
+    error = function(message)
+      table.insert(events, { level = "error", message = message })
+    end,
+  }
+  vim.fn.executable = function(binary)
+    if binary == "curl" then
+      return 1
+    end
+    return original_executable(binary)
+  end
+  vim.fn.has = function(feature)
+    if feature == "nvim-0.10" then
+      return 1
+    end
+    return original_has(feature)
+  end
+  vim.env.DEEPL_AUTH_KEY = nil
+  vim.env.GOOGLE_TRANSLATE_API_KEY = nil
+  vim.env.GOOGLE_API_KEY = nil
+
+  translate.setup({
+    api_key = "configured-deepl",
+    google_api_key = "configured-google",
+    persist_target = false,
+  })
+
+  ok, run_err = pcall(health.check)
+
+  vim.fn.has = original_has
+  vim.fn.executable = original_executable
+  vim.env.DEEPL_AUTH_KEY = original_deepl
+  vim.env.GOOGLE_TRANSLATE_API_KEY = original_google_translate
+  vim.env.GOOGLE_API_KEY = original_google
+  vim.health = original_health
+
+  assert(ok, ("translate.health.check with runtime config should not throw: %s"):format(tostring(run_err)))
+  assert(has_event(events, "ok", "runtime config"), "health report should acknowledge runtime-configured API keys")
+  assert(not has_event(events, "warn", "DEEPL_AUTH_KEY"), "runtime-configured DeepL key should suppress env-only warning")
+  assert(not has_event(events, "warn", "GOOGLE_TRANSLATE_API_KEY"), "runtime-configured Google key should suppress env-only warning")
 end
 
 return M

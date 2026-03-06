@@ -9,6 +9,7 @@ Minimal translation plugin for Neovim with DeepL and Google Cloud Translation en
 ## Features
 
 - Translate visual selections with a single keymap
+- Translate the current buffer via command or opt-in keymap
 - DeepL and Google Cloud Translation API v2 support
 - Floating window output with centered engine title in border
 - Target language picker (`vim.ui.select`) per engine
@@ -17,7 +18,7 @@ Minimal translation plugin for Neovim with DeepL and Google Cloud Translation en
 - Preserve original line structure: blank lines and leading indentation are kept intact
 - Parallel chunking for large selections (50 lines per request)
 - Race guard: rapid re-translations cancel stale in-flight requests
-- Security: API keys are passed via curl stdin (`--config -`), never as CLI arguments
+- Security: API keys stay on curl stdin and translation bodies are written to temp files instead of CLI arguments
 
 ## Requirements
 
@@ -86,6 +87,7 @@ require("translate").setup({
   state_path = vim.fs.normalize(vim.fn.stdpath("state") .. "/translate.nvim/state.json"),
   keymaps = {
     translate_visual = "<Space>tr",
+    translate_file = "", -- opt-in; e.g. "<Space>tf"
     select_target = "<Space>tl",
     select_engine = "<Space>te",
   },
@@ -120,6 +122,7 @@ require("translate").setup({
 | `persist_target` | `boolean` | `true` | Save engine and target language to disk between sessions |
 | `state_path` | `string` | `stdpath("state").."/translate.nvim/state.json"` | Absolute path for persisted state file |
 | `keymaps.translate_visual` | `string` | `"<Space>tr"` | Keymap to translate visual selection |
+| `keymaps.translate_file` | `string` | `""` | Optional keymap to translate the entire current buffer |
 | `keymaps.select_target` | `string` | `"<Space>tl"` | Keymap to open target language picker |
 | `keymaps.select_engine` | `string` | `"<Space>te"` | Keymap to open engine picker |
 
@@ -141,7 +144,7 @@ require("translate").setup({
 | `float.inherit_view` | `boolean` | `true` | Copy `tabstop`, `shiftwidth`, etc. from source window |
 | `float.center_vertical` | `boolean` | `false` | Vertically center short text in the float |
 
-> **Deprecated:** `max_width_ratio` and `max_height_ratio` are silently migrated to `width_ratio`/`height_ratio`.
+> **Deprecated:** `max_width_ratio` and `max_height_ratio` are no longer supported. Use `width_ratio` and `height_ratio`; `setup()` emits a warning when legacy keys are detected.
 
 ### Engine selection priority
 
@@ -179,6 +182,7 @@ When switching engines via `:TranslateSelectEngine` or `set_engine()`:
 | Keymap | Mode | Action | Default |
 |---|---|---|---|
 | `keymaps.translate_visual` | `x` | Translate visual selection | `<Space>tr` |
+| `keymaps.translate_file` | `n` | Translate the current buffer | Disabled |
 | `keymaps.select_target` | `n`, `x` | Open target language picker | `<Space>tl` |
 | `keymaps.select_engine` | `n`, `x` | Open engine picker | `<Space>te` |
 
@@ -188,8 +192,11 @@ Set any keymap to `""` (empty string) to disable it.
 
 | Command | Description |
 |---|---|
+| `:TranslateFile` | Translate the entire current buffer and show the result in the float |
 | `:TranslateSelectTarget` | Open target language picker for current engine |
 | `:TranslateSelectEngine` | Switch translation engine (`deepl` / `google`) |
+
+`TranslateFile` sends the whole current buffer to the configured translation provider. Keep that in mind for sensitive files.
 
 ## Lua API
 
@@ -201,6 +208,9 @@ translate.setup(opts?)
 
 -- Translate current visual selection and show result in float
 translate.translate_visual()
+
+-- Translate the entire current buffer and show result in float
+translate.translate_file()
 
 -- Open target language picker (vim.ui.select)
 translate.select_target()
@@ -225,7 +235,7 @@ translate.current_engine()       -- returns e.g. "deepl"
 :checkhealth translate
 ```
 
-Checks: Neovim version (0.10+), `curl` availability, API key environment variables.
+Checks: Neovim version (0.10+), `curl` availability, and DeepL/Google keys from the environment or the active `setup()` config.
 
 ## Testing
 

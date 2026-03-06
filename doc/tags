@@ -1,3 +1,4 @@
+:TranslateFile	translate.txt	/*:TranslateFile*
 :TranslateSelectEngine	translate.txt	/*:TranslateSelectEngine*
 :TranslateSelectTarget	translate.txt	/*:TranslateSelectTarget*
 translate-api	translate.txt	/*translate-api*
@@ -49,4 +50,5 @@ translate.select_target()	translate.txt	/*translate.select_target()*
 translate.set_engine()	translate.txt	/*translate.set_engine()*
 translate.set_target()	translate.txt	/*translate.set_target()*
 translate.setup()	translate.txt	/*translate.setup()*
+translate.translate_file()	translate.txt	/*translate.translate_file()*
 translate.translate_visual()	translate.txt	/*translate.translate_visual()*

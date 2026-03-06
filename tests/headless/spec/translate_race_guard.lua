@@ -1,6 +1,7 @@
 local M = {}
 
 local async_case = require("tests.headless.helpers.async_case")
+local mock = require("tests.headless.helpers.mock_system")
 
 local function make_deepl_response(prefix, count)
   local items = {}
@@ -29,12 +30,14 @@ function M.run()
 
     local text_count = 0
     local target_lang
-    for i, value in ipairs(args) do
-      if type(value) == "string" and string.find(value, "target_lang=", 1, true) then
-        target_lang = value
-      end
-      if value == "--data-urlencode" and type(args[i + 1]) == "string" and string.find(args[i + 1], "text=", 1, true) then
-        text_count = text_count + 1
+    for _, value in ipairs(args) do
+      if type(value) == "string" and string.sub(value, 1, 1) == "@" then
+        local body = table.concat(vim.fn.readfile(string.sub(value, 2)), "\n")
+        local matched_target = string.match(body, "target_lang=([^&]+)")
+        if matched_target then
+          target_lang = matched_target
+        end
+        text_count = select(2, string.gsub(body, "text=", ""))
       end
     end
     assert(target_lang ~= nil, "target_lang is missing in request")
@@ -78,8 +81,8 @@ function M.run()
 
   local first = table.concat(calls[1], " ")
   local second = table.concat(calls[2], " ")
-  assert(string.find(first, "target_lang=KO", 1, true), "first chunk target should be KO")
-  assert(string.find(second, "target_lang=KO", 1, true), "second chunk should keep snapshot target KO")
+  assert(string.find(first, "@", 1, true), "first chunk should send a body tempfile")
+  assert(string.find(second, "@", 1, true), "second chunk should send a body tempfile")
 
   local translate = require("translate")
   local deepl_provider = require("translate.deepl")
@@ -138,6 +141,53 @@ function M.run()
   M._request_count = nil
 
   assert(ui_ok, "stale request guard did not keep the latest result")
+
+  mock.with_mock_system({
+    {
+      code = 0,
+      stdout = make_deepl_response("slow-", 1),
+      stderr = "",
+      delay_ms = 80,
+    },
+    {
+      code = 0,
+      stdout = make_deepl_response("fast-", 1),
+      stderr = "",
+      delay_ms = 5,
+    },
+  }, function(_, records)
+    translate.setup({
+      engine = "deepl",
+      api_key = "dummy",
+      persist_target = false,
+      target_lang = "KO",
+      float = {
+        border = "rounded",
+        width = 30,
+        height = 6,
+        min_width = 20,
+        min_height = 4,
+        inherit_view = false,
+        center_vertical = false,
+        winhighlight = "NormalFloat:Normal",
+      },
+    })
+
+    local buf2 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, buf2)
+    vim.api.nvim_buf_set_lines(buf2, 0, -1, false, { "hello world" })
+    vim.api.nvim_buf_set_mark(buf2, "<", 1, 0, {})
+    vim.api.nvim_buf_set_mark(buf2, ">", 1, 11, {})
+
+    translate.translate_visual()
+    translate.translate_visual()
+
+    local cancelled = vim.wait(1000, function()
+      return records[1] and records[1].killed
+    end, 20)
+
+    assert(cancelled, "starting a new translation should cancel the previous in-flight curl request")
+  end)
 end
 
 return M

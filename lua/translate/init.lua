@@ -14,6 +14,7 @@ local M = {
   _keymaps = {},
   _next_request_id = 0,
   _active_request_id = nil,
+  _active_request_controller = nil,
 }
 
 local function notify(message, level)
@@ -72,7 +73,21 @@ local function resolve_provider_label(cfg, engine)
 end
 
 local function has_explicit_engine_option(opts)
-  return type(opts) == "table" and opts.engine ~= nil
+  return type(opts) == "table" and normalize.lower_name(opts.engine) ~= nil
+end
+
+local function notify_deprecated_float_options(opts)
+  local float = type(opts) == "table" and type(opts.float) == "table" and opts.float or nil
+  if not float then
+    return
+  end
+
+  if float.max_width_ratio ~= nil then
+    notify("float.max_width_ratio is deprecated. Use float.width_ratio instead.", vim.log.levels.WARN)
+  end
+  if float.max_height_ratio ~= nil then
+    notify("float.max_height_ratio is deprecated. Use float.height_ratio instead.", vim.log.levels.WARN)
+  end
 end
 
 local function normalize_target_for_provider(provider, target)
@@ -116,6 +131,11 @@ end
 
 local function invalidate_active_translation()
   M._active_request_id = nil
+  local controller = M._active_request_controller
+  M._active_request_controller = nil
+  if controller and type(controller.kill) == "function" then
+    pcall(controller.kill, controller, 15)
+  end
 end
 
 local function begin_translation_request()
@@ -338,6 +358,7 @@ local function select_engine_from(items)
 end
 
 function M.setup(opts)
+  notify_deprecated_float_options(opts)
   local cfg = config_module.build(opts)
   local explicit_engine = has_explicit_engine_option(opts)
   if cfg.persist_target then
@@ -377,10 +398,12 @@ function M.setup(opts)
   end
   cfg.target_lang = normalized_target
 
+  invalidate_active_translation()
   M._config = cfg
   M._target_cache = {}
   M._next_request_id = 0
   M._active_request_id = nil
+  M._active_request_controller = nil
 
   clear_keymaps()
   set_keymap("x", cfg.keymaps.translate_visual, function()
@@ -405,11 +428,17 @@ local function do_translate(cfg, text)
     return
   end
 
+  invalidate_active_translation()
   local request_id = begin_translation_request()
   local request_snapshot = build_translation_snapshot(cfg)
   local model_label = resolve_provider_label(cfg)
+  local request_finished = false
 
-  provider.translate(request_snapshot, text, function(api_err, translated)
+  local controller = provider.translate(request_snapshot, text, function(api_err, translated)
+    request_finished = true
+    if is_active_translation_request(request_id) then
+      M._active_request_controller = nil
+    end
     if not is_active_translation_request(request_id) then
       return
     end
@@ -424,6 +453,12 @@ local function do_translate(cfg, text)
       ui.show_result(translated, cfg, { model = model_label })
     end)
   end)
+
+  if not request_finished and is_active_translation_request(request_id) then
+    M._active_request_controller = controller
+  else
+    M._active_request_controller = nil
+  end
 end
 
 function M.translate_visual()

@@ -2,6 +2,7 @@ local M = {}
 
 local SPECS = {
   "tests.headless.spec.config_normalize",
+  "tests.headless.spec.setup_validation",
   "tests.headless.spec.ui_size_base_window",
   "tests.headless.spec.engine_switch_target",
   "tests.headless.spec.engine_persist_restart",

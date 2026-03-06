@@ -108,22 +108,31 @@ local function ensure_api_key(config, on_done)
 end
 
 ---Build curl arguments for a /translate request.
----@param config table request config with `target_lang` and endpoint info
----@param lines string[] text lines to translate
+---@param config table request config with endpoint info
+---@param body_path string path to URL-encoded POST body
 ---@return string[] curl arguments
-local function build_translate_args(config, lines)
+local function build_translate_args(config, body_path)
   local endpoint = base_url(config) .. "/translate"
   local args = build_base_curl_args("POST", endpoint)
-
-  table.insert(args, "--data-urlencode")
-  table.insert(args, "target_lang=" .. config.target_lang)
-
-  for _, line in ipairs(lines) do
-    table.insert(args, "--data-urlencode")
-    table.insert(args, "text=" .. line)
-  end
+  table.insert(args, "--data-binary")
+  table.insert(args, "@" .. body_path)
 
   return args
+end
+
+local function build_translate_body(config, lines)
+  local fields = {
+    { name = "target_lang", value = config.target_lang },
+  }
+
+  for _, line in ipairs(lines) do
+    table.insert(fields, {
+      name = "text",
+      value = line,
+    })
+  end
+
+  return provider_common.build_form_body(fields)
 end
 
 ---Build the stdin config string for DeepL authorization header.
@@ -187,9 +196,17 @@ function M.translate(config, text, on_done)
     stdin = build_auth_header_stdin(request_config.api_key),
   })
 
-  provider_common.translate_lines(source_lines, request_lines, index_map, indent_map, MAX_TEXTS_PER_REQUEST, "DeepL",
+  return provider_common.translate_lines(source_lines, request_lines, index_map, indent_map, MAX_TEXTS_PER_REQUEST, "DeepL",
     function(chunk, start_idx, callback)
-      provider_common.run_curl_json(build_translate_args(request_config, chunk), curl_opts, function(err, decoded)
+      local body_path, write_err = provider_common.write_temp_file("deepl-request", build_translate_body(request_config, chunk))
+      if not body_path then
+        callback(write_err)
+        return nil
+      end
+
+      return provider_common.run_curl_json(build_translate_args(request_config, body_path), vim.tbl_extend("force", {}, curl_opts, {
+        cleanup_paths = { body_path },
+      }), function(err, decoded)
         if err then callback(err); return end
         local texts, decode_err = decode_translate_response(decoded, #chunk, start_idx)
         if not texts then callback(decode_err); return end
@@ -211,7 +228,7 @@ function M.target_languages(config, on_done)
   local endpoint = base_url(config) .. "/languages?type=target"
   local args = build_base_curl_args("GET", endpoint)
 
-  provider_common.run_curl_json(args, vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
+  return provider_common.run_curl_json(args, vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
     stdin = build_auth_header_stdin(config.api_key),
   }), function(err, decoded)
     if err then

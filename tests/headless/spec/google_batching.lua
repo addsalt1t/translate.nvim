@@ -18,10 +18,33 @@ function M.run()
     table.insert(input_lines, ("line-%d"):format(i))
   end
   local input = table.concat(input_lines, "\n")
+  local body_snapshots = {}
 
   mock.with_mock_system({
-    { code = 0, stdout = make_cloud_response(1, 50), stderr = "" },
-    { code = 0, stdout = make_cloud_response(51, 1), stderr = "" },
+    {
+      code = 0,
+      stdout = make_cloud_response(1, 50),
+      stderr = "",
+      on_call = function(record)
+        for _, value in ipairs(record.args) do
+          if type(value) == "string" and string.sub(value, 1, 1) == "@" then
+            table.insert(body_snapshots, table.concat(vim.fn.readfile(string.sub(value, 2)), "\n"))
+          end
+        end
+      end,
+    },
+    {
+      code = 0,
+      stdout = make_cloud_response(51, 1),
+      stderr = "",
+      on_call = function(record)
+        for _, value in ipairs(record.args) do
+          if type(value) == "string" and string.sub(value, 1, 1) == "@" then
+            table.insert(body_snapshots, table.concat(vim.fn.readfile(string.sub(value, 2)), "\n"))
+          end
+        end
+      end,
+    },
   }, function(calls)
     local err_msg, output = async_case.await_callback("google batching translate", 1500, function(done)
       google.translate({
@@ -36,8 +59,9 @@ function M.run()
     assert(type(output) == "string" and output ~= "", "google batching output is empty")
 
     assert(#calls == 2, ("expected 2 batched requests, got %d"):format(#calls))
-    assert(mock.count_occurrences(calls[1], "q=") == 50, "first batch should include 50 q params")
-    assert(mock.count_occurrences(calls[2], "q=") == 1, "second batch should include 1 q param")
+    assert(#body_snapshots == 2, ("expected 2 request body snapshots, got %d"):format(#body_snapshots))
+    assert(select(2, string.gsub(body_snapshots[1], "q=", "")) == 50, "first batch should include 50 q params")
+    assert(select(2, string.gsub(body_snapshots[2], "q=", "")) == 1, "second batch should include 1 q param")
 
     local output_lines = vim.split(output, "\n", { plain = true, trimempty = false })
     assert(#output_lines == 51, ("output line count mismatch: %d"):format(#output_lines))

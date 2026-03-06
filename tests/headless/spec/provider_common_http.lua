@@ -61,6 +61,28 @@ function M.run()
     end)
     assert(err_msg == "boom", ("provider_common transport message mismatch: %s"):format(tostring(err_msg)))
   end)
+
+  mock.with_mock_system({
+    { code = 0, stdout = '{"ok":true}', stderr = "", delay_ms = 80 },
+  }, function(_, records)
+    local callback_count = 0
+    local controller = provider_common.run_curl_json({ "curl", "https://example.test" }, {
+      empty_stdout_message = "empty",
+      decode_error_message = "decode failed",
+    }, function()
+      callback_count = callback_count + 1
+    end)
+
+    assert(type(controller) == "table" and type(controller.kill) == "function", "run_curl_json should return a controller with kill()")
+    controller:kill(15)
+
+    vim.wait(160, function()
+      return false
+    end, 20)
+
+    assert(records[1].killed, "run_curl_json controller should kill the underlying vim.system handle")
+    assert(callback_count == 0, "run_curl_json should suppress callbacks after cancellation")
+  end)
 end
 
 return M

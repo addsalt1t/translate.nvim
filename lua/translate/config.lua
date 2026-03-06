@@ -16,7 +16,7 @@ local defaults = {
   state_path = vim.fs.normalize(vim.fn.stdpath("state") .. "/translate.nvim/state.json"),
   keymaps = {
     translate_visual = "<Space>tr",
-    translate_file = "<Space>tf",
+    translate_file = "",
     select_target = "<Space>tl",
     select_engine = "<Space>te",
   },
@@ -42,6 +42,21 @@ local function normalize_engine(engine)
   return normalize.lower_name(engine) or "deepl"
 end
 
+local function validate_keymaps(opts)
+  if opts.keymaps ~= nil and type(opts.keymaps) ~= "table" then
+    error("translate.nvim setup error: keymaps must be a table; set entries to '' to disable.")
+  end
+end
+
+local function validate_float_absolute_dimension(value, option_name)
+  if value == nil then
+    return
+  end
+  if type(value) ~= "number" or value < 1 or math.floor(value) ~= value then
+    error(("translate.nvim setup error: %s must be a positive integer."):format(option_name))
+  end
+end
+
 local function normalize_engine_labels(labels)
   local normalized = {}
   if type(labels) ~= "table" then
@@ -64,6 +79,7 @@ end
 ---@return table
 function M.build(user_opts)
   local opts = vim.tbl_deep_extend("force", {}, defaults, user_opts or {})
+  validate_keymaps(opts)
   opts.api_key = normalize.single_line_secret(opts.api_key)
   opts.google_api_key = normalize.single_line_secret(opts.google_api_key)
   opts.engine = normalize_engine(opts.engine)
@@ -90,6 +106,8 @@ function M.build(user_opts)
   -- Validate min dimensions as positive integers.
   opts.float.min_width = normalize.positive_integer(opts.float.min_width, defaults.float.min_width)
   opts.float.min_height = normalize.positive_integer(opts.float.min_height, defaults.float.min_height)
+  validate_float_absolute_dimension(opts.float.width, "float.width")
+  validate_float_absolute_dimension(opts.float.height, "float.height")
 
   return opts
 end

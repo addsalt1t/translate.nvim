@@ -194,26 +194,35 @@ local function build_base_curl_args(method, url)
 end
 
 ---Build curl arguments for the official Cloud Translation API translate endpoint.
----@param lines string[] Lines of text to translate
+---@param body_path string path to URL-encoded POST body
 ---@param target_lang string Normalized target language code
 ---@return string[] args Curl command arguments
-local function build_official_translate_args(lines, target_lang)
+local function build_official_translate_args(body_path, target_lang)
   local args = build_base_curl_args("POST", "https://translation.googleapis.com/language/translate/v2")
   vim.list_extend(args, {
     "--config",
     "-",
-    "--data-urlencode",
-    "target=" .. target_lang:lower(),
-    "--data-urlencode",
-    "format=text",
+    "--data-binary",
+    "@" .. body_path,
   })
 
+  return args
+end
+
+local function build_official_translate_body(lines, target_lang)
+  local fields = {
+    { name = "target", value = target_lang:lower() },
+    { name = "format", value = "text" },
+  }
+
   for _, line in ipairs(lines) do
-    table.insert(args, "--data-urlencode")
-    table.insert(args, "q=" .. line)
+    table.insert(fields, {
+      name = "q",
+      value = line,
+    })
   end
 
-  return args
+  return provider_common.build_form_body(fields)
 end
 
 ---Build curl arguments for the official Cloud Translation API languages endpoint.
@@ -326,10 +335,18 @@ function M.translate(config, text, on_done)
     stdin = build_api_key_header_stdin(api_key),
   })
 
-  provider_common.translate_lines(source_lines, request_lines, index_map, indent_map, MAX_TEXTS_PER_REQUEST, "Google",
+  return provider_common.translate_lines(source_lines, request_lines, index_map, indent_map, MAX_TEXTS_PER_REQUEST, "Google",
     function(chunk, _start_idx, callback)
-      local args = build_official_translate_args(chunk, target_lang)
-      provider_common.run_curl_json(args, curl_opts, function(err, decoded)
+      local body_path, write_err = provider_common.write_temp_file("google-request", build_official_translate_body(chunk, target_lang))
+      if not body_path then
+        callback(write_err)
+        return nil
+      end
+
+      local args = build_official_translate_args(body_path, target_lang)
+      return provider_common.run_curl_json(args, vim.tbl_extend("force", {}, curl_opts, {
+        cleanup_paths = { body_path },
+      }), function(err, decoded)
         if err then callback(err); return end
         local translated_texts, decode_err = decode_official_translated_texts(decoded, #chunk)
         if not translated_texts then callback(decode_err); return end
@@ -347,7 +364,7 @@ function M.target_languages(config, on_done)
   local api_key = ensure_api_key(config or {}, on_done)
   if not api_key then return end
 
-  provider_common.run_curl_json(build_official_languages_args(), vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
+  return provider_common.run_curl_json(build_official_languages_args(), vim.tbl_extend("force", {}, CURL_JSON_OPTIONS, {
     stdin = build_api_key_header_stdin(api_key),
   }), function(err, decoded)
     if err then
