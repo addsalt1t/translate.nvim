@@ -9,7 +9,7 @@ Minimal translation plugin for Neovim with DeepL and Google Cloud Translation en
 ## Features
 
 - Translate visual selections with a single keymap
-- Translate the current buffer via command or opt-in keymap
+- Translate the current buffer via command or default keymap
 - DeepL and Google Cloud Translation API v2 support
 - Floating window output with centered engine title in border
 - Target language picker (`vim.ui.select`) per engine
@@ -87,7 +87,7 @@ require("translate").setup({
   state_path = vim.fs.normalize(vim.fn.stdpath("state") .. "/translate.nvim/state.json"),
   keymaps = {
     translate_visual = "<Space>tr",
-    translate_file = "", -- opt-in; e.g. "<Space>tf"
+    translate_file = "<Space>tf",
     select_target = "<Space>tl",
     select_engine = "<Space>te",
   },
@@ -122,7 +122,7 @@ require("translate").setup({
 | `persist_target` | `boolean` | `true` | Save engine and target language to disk between sessions |
 | `state_path` | `string` | `stdpath("state").."/translate.nvim/state.json"` | Absolute path for persisted state file |
 | `keymaps.translate_visual` | `string` | `"<Space>tr"` | Keymap to translate visual selection |
-| `keymaps.translate_file` | `string` | `""` | Optional keymap to translate the entire current buffer |
+| `keymaps.translate_file` | `string` | `"<Space>tf"` | Keymap to translate the entire current buffer |
 | `keymaps.select_target` | `string` | `"<Space>tl"` | Keymap to open target language picker |
 | `keymaps.select_engine` | `string` | `"<Space>te"` | Keymap to open engine picker |
 
@@ -182,11 +182,11 @@ When switching engines via `:TranslateSelectEngine` or `set_engine()`:
 | Keymap | Mode | Action | Default |
 |---|---|---|---|
 | `keymaps.translate_visual` | `x` | Translate visual selection | `<Space>tr` |
-| `keymaps.translate_file` | `n` | Translate the current buffer | Disabled |
+| `keymaps.translate_file` | `n` | Translate the current buffer | `<Space>tf` |
 | `keymaps.select_target` | `n`, `x` | Open target language picker | `<Space>tl` |
 | `keymaps.select_engine` | `n`, `x` | Open engine picker | `<Space>te` |
 
-Set any keymap to `""` (empty string) to disable it.
+Set any keymap to `""` (empty string) to disable it, including the default whole-buffer shortcut.
 
 ## Commands
 
@@ -197,6 +197,7 @@ Set any keymap to `""` (empty string) to disable it.
 | `:TranslateSelectEngine` | Switch translation engine (`deepl` / `google`) |
 
 `TranslateFile` sends the whole current buffer to the configured translation provider. Keep that in mind for sensitive files.
+If you prefer explicit opt-in for whole-buffer translation, set `keymaps.translate_file = ""` in `setup()`.
 
 ## Lua API
 

@@ -16,7 +16,7 @@ local defaults = {
   state_path = vim.fs.normalize(vim.fn.stdpath("state") .. "/translate.nvim/state.json"),
   keymaps = {
     translate_visual = "<Space>tr",
-    translate_file = "",
+    translate_file = "<Space>tf",
     select_target = "<Space>tl",
     select_engine = "<Space>te",
   },

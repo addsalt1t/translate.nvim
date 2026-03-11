@@ -35,7 +35,7 @@ title.
 
 Key capabilities:
 - Visual selection translation with a single keymap
-- Whole-buffer translation via |:TranslateFile| or an opt-in keymap
+- Whole-buffer translation via |:TranslateFile| or the default keymap
 - Two translation engines: DeepL (35 targets) and Google (109 targets)
 - Engine and target language pickers via |vim.ui.select()|
 - State persistence across Neovim sessions
@@ -117,7 +117,7 @@ any option as needed.
     ),
     keymaps = {
       translate_visual = "<Space>tr",
-      translate_file = "",  -- opt-in; e.g. "<Space>tf"
+      translate_file = "<Space>tf",
       select_target = "<Space>tl",
       select_engine = "<Space>te",
     },
@@ -188,7 +188,7 @@ keymaps ~
   Type: `table`
   Keymap bindings. Set any value to `""` to disable that keymap.
   - `translate_visual`  (default `<Space>tr`) translate visual selection
-  - `translate_file`    (default disabled) translate current buffer
+  - `translate_file`    (default `<Space>tf`) translate current buffer
   - `select_target`     (default `<Space>tl`) open target language picker
   - `select_engine`     (default `<Space>te`) open engine picker
 
@@ -324,13 +324,11 @@ Default keymaps are set during |translate.setup()|:
 
   Keymap       Mode   Action ~
   `<Space>tr`    x      Translate visual selection
-  disabled       n      Translate current buffer
+  `<Space>tf`    n      Translate current buffer
   `<Space>tl`    n, x   Open target language picker
   `<Space>te`    n, x   Open engine picker
 
 Set any keymap value to `""` (empty string) in `setup()` to disable it.
-Set `keymaps.translate_file` explicitly (for example `<Space>tf`) to
-opt in to whole-buffer translation.
 
 ==============================================================================
 7. Commands                                           *translate-commands*
@@ -340,6 +338,8 @@ opt in to whole-buffer translation.
   Translate the entire current buffer and display the result in the
   floating window. This sends the whole buffer to the configured
   translation provider.
+  To keep whole-buffer translation opt-in in your setup, set
+  `keymaps.translate_file = ""`.
 
                                               *:TranslateSelectTarget*
 :TranslateSelectTarget

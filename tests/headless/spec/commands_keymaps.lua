@@ -16,7 +16,7 @@ function M.run()
   })
 
   local file_map = vim.fn.maparg("<Space>tf", "n")
-  assert(file_map == "", "translate_file keymap should be disabled by default")
+  assert(type(file_map) == "string" and file_map ~= "", "translate_file keymap (<Space>tf) should be enabled by default")
 
   translate.setup({
     engine = "deepl",
@@ -33,7 +33,19 @@ function M.run()
   local map = vim.fn.maparg("<Space>te", "n")
   assert(type(map) == "string" and map ~= "", "engine keymap (<Space>te) is missing")
   local translate_file_map = vim.fn.maparg("<Space>tf", "n")
-  assert(type(translate_file_map) == "string" and translate_file_map ~= "", "translate_file keymap (<Space>tf) should be opt-in")
+  assert(type(translate_file_map) == "string" and translate_file_map ~= "", "translate_file keymap (<Space>tf) should stay available after setup overrides")
+
+  translate.setup({
+    engine = "deepl",
+    api_key = "dummy",
+    persist_target = false,
+    keymaps = {
+      translate_file = "",
+    },
+  })
+
+  local disabled_translate_file_map = vim.fn.maparg("<Space>tf", "n")
+  assert(disabled_translate_file_map == "", "translate_file keymap (<Space>tf) should be removable with an empty string override")
 
   local notifications = {}
   local original_notify = vim.notify
