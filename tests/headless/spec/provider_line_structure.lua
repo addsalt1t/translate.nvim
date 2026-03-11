@@ -237,6 +237,75 @@ function M.run()
     assert(err_msg == nil, ("google indent translate failed: %s"):format(tostring(err_msg)))
     assert(output == "  TRANSLATED-1\n    TRANSLATED-2\n\nTRANSLATED-3", "google must preserve leading whitespace (indentation)")
   end)
+
+  -- DeepL: whitespace-only lines must be preserved without sending empty translation items
+  do
+    local body_snapshot = nil
+
+    mock.with_mock_system({
+      {
+        code = 0,
+        stdout = '{"translations":[{"text":"DEEPL-ONLY-1"},{"text":"DEEPL-ONLY-2"}]}',
+        stderr = "",
+        on_call = function(record)
+          for _, value in ipairs(record.args) do
+            if type(value) == "string" and string.sub(value, 1, 1) == "@" then
+              body_snapshot = table.concat(vim.fn.readfile(string.sub(value, 2)), "\n")
+            end
+          end
+        end,
+      },
+    }, function()
+      local err_msg, output = async_case.await_callback("deepl whitespace-only line preservation", 1000, function(done)
+        deepl.translate({
+          api_key = "dummy",
+          free_api = true,
+          target_lang = "KO",
+        }, "alpha\n   \n\t\nbeta", function(err, translated)
+          done(err, translated)
+        end)
+      end)
+
+      assert(err_msg == nil, ("deepl whitespace-only line translate failed: %s"):format(tostring(err_msg)))
+      assert(output == "DEEPL-ONLY-1\n   \n\t\nDEEPL-ONLY-2", "deepl must preserve whitespace-only lines")
+      assert(type(body_snapshot) == "string", "deepl whitespace-only test should capture request body")
+      assert(select(2, string.gsub(body_snapshot, "text=", "")) == 2, "deepl should skip whitespace-only lines in request body")
+    end)
+  end
+
+  -- Google: whitespace-only lines must be preserved without sending empty translation items
+  do
+    local body_snapshot = nil
+
+    mock.with_mock_system({
+      {
+        code = 0,
+        stdout = '{"data":{"translations":[{"translatedText":"GOOGLE-ONLY-1"},{"translatedText":"GOOGLE-ONLY-2"}]}}',
+        stderr = "",
+        on_call = function(record)
+          for _, value in ipairs(record.args) do
+            if type(value) == "string" and string.sub(value, 1, 1) == "@" then
+              body_snapshot = table.concat(vim.fn.readfile(string.sub(value, 2)), "\n")
+            end
+          end
+        end,
+      },
+    }, function()
+      local err_msg, output = async_case.await_callback("google whitespace-only line preservation", 1000, function(done)
+        google.translate({
+          target_lang = "KO",
+          google_api_key = "dummy",
+        }, "alpha\n   \n\t\nbeta", function(err, translated)
+          done(err, translated)
+        end)
+      end)
+
+      assert(err_msg == nil, ("google whitespace-only line translate failed: %s"):format(tostring(err_msg)))
+      assert(output == "GOOGLE-ONLY-1\n   \n\t\nGOOGLE-ONLY-2", "google must preserve whitespace-only lines")
+      assert(type(body_snapshot) == "string", "google whitespace-only test should capture request body")
+      assert(select(2, string.gsub(body_snapshot, "q=", "")) == 2, "google should skip whitespace-only lines in request body")
+    end)
+  end
 end
 
 return M

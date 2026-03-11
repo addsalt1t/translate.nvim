@@ -13,8 +13,10 @@ local providers = {
 local M = {
   _config = nil,
   _target_cache = {},
+  _pending_target_lookups = {},
   _keymaps = {},
   _next_request_id = 0,
+  _next_target_lookup_id = 0,
   _active_request_id = nil,
   _active_request_controller = nil,
 }
@@ -144,6 +146,26 @@ local function begin_translation_request()
   M._next_request_id = M._next_request_id + 1
   M._active_request_id = M._next_request_id
   return M._next_request_id
+end
+
+local function begin_target_lookup(engine)
+  local current = M._pending_target_lookups[engine]
+  if current then
+    return nil
+  end
+
+  M._next_target_lookup_id = M._next_target_lookup_id + 1
+  M._pending_target_lookups[engine] = M._next_target_lookup_id
+  return M._next_target_lookup_id
+end
+
+local function finish_target_lookup(engine, lookup_id)
+  if M._pending_target_lookups[engine] ~= lookup_id then
+    return false
+  end
+
+  M._pending_target_lookups[engine] = nil
+  return true
 end
 
 local function is_active_translation_request(request_id)
@@ -350,7 +372,9 @@ local function activate_config(cfg)
   invalidate_active_translation()
   M._config = cfg
   M._target_cache = {}
+  M._pending_target_lookups = {}
   M._next_request_id = 0
+  M._next_target_lookup_id = 0
   M._active_request_id = nil
   M._active_request_controller = nil
   register_keymaps(cfg)
@@ -381,6 +405,7 @@ local function do_translate(cfg, text)
     return
   end
 
+  local source_win = vim.api.nvim_get_current_win()
   invalidate_active_translation()
   local request_id = begin_translation_request()
   local request_snapshot = build_translation_snapshot(cfg)
@@ -403,7 +428,10 @@ local function do_translate(cfg, text)
       if not is_active_translation_request(request_id) then
         return
       end
-      ui.show_result(translated, cfg, { model = model_label })
+      ui.show_result(translated, cfg, {
+        model = model_label,
+        source_win = source_win,
+      })
     end)
   end)
 
@@ -448,13 +476,29 @@ function M.select_target()
     return
   end
 
+  local lookup_id = begin_target_lookup(cache_key)
+  if not lookup_id then
+    return
+  end
+
   provider.target_languages(cfg, function(err, languages)
+    if not finish_target_lookup(cache_key, lookup_id) then
+      return
+    end
+
+    local current_cfg = ensure_setup()
     if err then
-      notify(err, vim.log.levels.ERROR)
+      if current_cfg.engine == cache_key then
+        notify(err, vim.log.levels.ERROR)
+      end
       return
     end
 
     M._target_cache[cache_key] = languages
+    if current_cfg.engine ~= cache_key then
+      return
+    end
+
     show_target_picker(languages)
   end)
 end

@@ -197,8 +197,8 @@ function M.build_request_lines(text)
   local indent_map = {}
 
   for source_index, line in ipairs(source_lines) do
-    if line ~= "" then
-      local indent, content = line:match("^(%s*)(.*)")
+    local indent, content = line:match("^(%s*)(.*)")
+    if content ~= "" then
       table.insert(request_lines, content)
       table.insert(index_map, source_index)
       table.insert(indent_map, indent)

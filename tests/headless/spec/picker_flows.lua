@@ -8,7 +8,9 @@ end
 function M.run()
   local translate = require("translate")
   local deepl = require("translate.deepl")
+  local google = require("translate.google")
   local original_target_languages = deepl.target_languages
+  local original_google_target_languages = google.target_languages
   local original_ui_select = vim.ui.select
   local original_notify = vim.notify
 
@@ -131,9 +133,76 @@ function M.run()
       notifications[#notifications].message == "provider boom",
       ("target picker failure message mismatch: %s"):format(tostring(notifications[#notifications].message))
     )
+
+    translate.setup({
+      engine = "deepl",
+      api_key = "dummy",
+      google_api_key = "dummy-google",
+      persist_target = false,
+      target_lang = "KO",
+    })
+
+    picker_calls = {}
+    provider_calls = 0
+    deepl.target_languages = function(_, on_done)
+      provider_calls = provider_calls + 1
+      vim.defer_fn(function()
+        on_done(nil, {
+          { code = "KO", name = "Korean" },
+          { code = "EN-US", name = "English (American)" },
+        })
+      end, 60)
+    end
+
+    translate.select_target()
+    translate.select_target()
+    wait_until("deduped target language lookup", function()
+      return provider_calls == 1
+    end)
+    wait_until("deduped target picker", function()
+      return #picker_calls == 1
+    end)
+
+    assert(provider_calls == 1, "select_target should reuse an in-flight lookup for the same engine")
+    assert(#picker_calls == 1, "select_target should only open one picker for an in-flight lookup")
+
+    translate.setup({
+      engine = "deepl",
+      api_key = "dummy",
+      google_api_key = "dummy-google",
+      persist_target = false,
+      target_lang = "KO",
+    })
+
+    picker_calls = {}
+    provider_calls = 0
+    deepl.target_languages = function(_, on_done)
+      provider_calls = provider_calls + 1
+      vim.defer_fn(function()
+        on_done(nil, {
+          { code = "KO", name = "Korean" },
+          { code = "EN-US", name = "English (American)" },
+        })
+      end, 60)
+    end
+    google.target_languages = function(_, on_done)
+      on_done(nil, {
+        { code = "KO", name = "Korean" },
+      })
+    end
+
+    translate.select_target()
+    translate.set_engine("google")
+    vim.wait(120, function()
+      return false
+    end, 20)
+
+    assert(provider_calls == 1, "stale target lookup test should issue one provider request")
+    assert(#picker_calls == 0, "stale target lookup should not open a picker after switching engines")
   end)
 
   deepl.target_languages = original_target_languages
+  google.target_languages = original_google_target_languages
   vim.ui.select = original_ui_select
   vim.notify = original_notify
 

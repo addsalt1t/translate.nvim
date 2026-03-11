@@ -186,11 +186,14 @@ end
 --- Display a translation result in a floating window.
 ---@param text string Translated text content
 ---@param config table Plugin configuration table (must contain `float` key)
----@param meta table|nil Optional metadata (e.g. { model = "DeepL" })
+---@param meta table|nil Optional metadata (e.g. { model = "DeepL", source_win = 1000 })
 function M.show_result(text, config, meta)
   close_current()
 
-  local source_win = vim.api.nvim_get_current_win()
+  local source_win = meta and meta.source_win
+  if not source_win or not vim.api.nvim_win_is_valid(source_win) then
+    source_win = vim.api.nvim_get_current_win()
+  end
   local source_buf = vim.api.nvim_win_get_buf(source_win)
 
   local float = config.float or {}

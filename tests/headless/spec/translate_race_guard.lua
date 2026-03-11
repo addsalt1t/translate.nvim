@@ -11,6 +11,14 @@ local function make_deepl_response(prefix, count)
   return ('{"translations":[%s]}'):format(table.concat(items, ","))
 end
 
+local function reset_to_regular_window()
+  local current_config = vim.api.nvim_win_get_config(0)
+  if type(current_config.relative) == "string" and current_config.relative ~= "" then
+    pcall(vim.api.nvim_win_close, 0, true)
+  end
+  vim.cmd("silent! only")
+end
+
 function M.run()
   local deepl = require("translate.deepl")
 
@@ -188,6 +196,75 @@ function M.run()
 
     assert(cancelled, "starting a new translation should cancel the previous in-flight curl request")
   end)
+
+  local original_list = vim.wo.list
+  deepl_provider.translate = function(_, _, on_done)
+    vim.defer_fn(function()
+      on_done(nil, "anchored-result")
+    end, 60)
+
+    return {
+      kill = function() end,
+    }
+  end
+
+  translate.setup({
+    engine = "deepl",
+    api_key = "dummy",
+    persist_target = false,
+    target_lang = "KO",
+    float = {
+      border = "rounded",
+      width = 30,
+      height = 6,
+      min_width = 20,
+      min_height = 4,
+      inherit_view = true,
+      center_vertical = false,
+      winhighlight = "NormalFloat:Normal",
+    },
+  })
+
+  reset_to_regular_window()
+  vim.cmd("enew")
+  local source_win = vim.api.nvim_get_current_win()
+  vim.wo[source_win].list = true
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "hello world" })
+  vim.cmd("vsplit")
+  local other_win = vim.api.nvim_get_current_win()
+  vim.wo[other_win].list = false
+  vim.api.nvim_set_current_win(source_win)
+  vim.api.nvim_buf_set_mark(0, "<", 1, 0, {})
+  vim.api.nvim_buf_set_mark(0, ">", 1, 11, {})
+
+  local original_mode = vim.fn.mode
+  local original_getpos = vim.fn.getpos
+  vim.fn.mode = function()
+    return "v"
+  end
+  vim.fn.getpos = function(mark)
+    if mark == "v" then
+      return { 0, 1, 1, 0 }
+    end
+    return { 0, 1, 11, 0 }
+  end
+
+  translate.translate_visual()
+  vim.api.nvim_set_current_win(other_win)
+
+  local anchored = vim.wait(1500, function()
+    local win = vim.api.nvim_get_current_win()
+    local cfg = vim.api.nvim_win_get_config(win)
+    return cfg.relative == "editor" and vim.wo[win].list == true
+  end, 20)
+
+  vim.fn.mode = original_mode
+  vim.fn.getpos = original_getpos
+  vim.wo.list = original_list
+  deepl_provider.translate = original_translate
+
+  assert(anchored, "async translation result should inherit view options from the original source window")
+  reset_to_regular_window()
 end
 
 return M
